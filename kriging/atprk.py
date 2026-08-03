@@ -1,4 +1,7 @@
-import DSCK as GSF
+try:
+    from . import spatial as GSF
+except ImportError:  # 保留直接运行旧脚本时的兼容性
+    import spatial as GSF
 import numpy as np
 from numba import jit
 from scipy.optimize import least_squares

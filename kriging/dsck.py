@@ -641,7 +641,8 @@ def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2):
     r2 = r_VU_kl(W1, W2, s0, s, xX3, PSF1, PSF2)  # PSF2为24
     r3 = r2.T  # 转置r2
     r4 = r_UU_ll(W2, s, xX2, PSF2)
-    yita = np.zeros((s0, s0, 60))  # 用来存储结果
+    coefficient_count = (2 * W1 + 1) ** 2 + (2 * W2 + 1) ** 2 + 2
+    yita = np.zeros((s0, s0, coefficient_count))  # 用来存储结果
     for i in range(s0):
         for j in range(s0):
             cordinate_vm = np.array([W1 * s * s0 + s *( i + 1) - 1, W1 * s * s0 + s * (j + 1) - 1])
@@ -664,7 +665,7 @@ def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2):
 @jit(nopython=True)
 def calculate_coordinate(s0, s, W1, W2, Coarse, Fine, yitaX):
     c, d = Coarse.shape
-    Simulated_part = np.zeros((c - s * W1, d - s * W1))  # 创建一个全为零的矩阵
+    Simulated_part = np.zeros((c - 2 * W1, d - 2 * W1))  # 去除粗影像扩展边界
     M1, N1 = np.where(Simulated_part == 0)  # 获取 Simulated_part 中等于 0 的位置
     numberM1 = len(M1)  # M1 中的元素个数
     M1 = M1 + W1  # 增加 W1 偏移
@@ -675,7 +676,12 @@ def calculate_coordinate(s0, s, W1, W2, Coarse, Fine, yitaX):
             for j in range(s0):
                 # 获取局部窗口数据
                 Local_W1 = Coarse[M1[k] - W1:M1[k] + W1 + 1, N1[k] - W1:N1[k] + W1 + 1]
-                Local_W2 = Fine[s0 * (M1[k] - W1):s0 * (M1[k] + W1) + 1, s0 * (N1[k] - W1):s0 * (N1[k] + W1) + 1]
+                fine_row = s0 * M1[k]
+                fine_column = s0 * N1[k]
+                Local_W2 = Fine[
+                    fine_row - W2:fine_row + W2 + 1,
+                    fine_column - W2:fine_column + W2 + 1,
+                ]
                 # 获取 yitaX 的特定切片
                 co = yitaX[i, j, :-2].flatten() # 假   设 D3_D2 函数是处理 yitaX 的一部分
                 data = np.hstack((Local_W1.flatten(), Local_W2.flatten()))
@@ -685,10 +691,9 @@ def calculate_coordinate(s0, s, W1, W2, Coarse, Fine, yitaX):
 
 
 def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
-                          L_sill, L_range, L_constant, rate, H, W1, PSF1):
+                          L_sill, L_range, L_constant, rate, H, W1, PSF1,
+                          s0=COARSE_SCALE, s=FINE_SCALE):
     """拟合并反卷积粗、细及交叉半变异模型。"""
-    s0 = COARSE_SCALE
-    s = FINE_SCALE
     # x0 和 x1 的初始值
     x0 = np.array([100, 1])
     x1 = np.array([10, 100, 1])
@@ -713,12 +718,11 @@ def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
 
 
 def calculate_matrix(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
-                            L_constant, rate, H, W1, W2, PSF1, PSF2):
-    s0 = COARSE_SCALE
-    s = FINE_SCALE
+                            L_constant, rate, H, W1, W2, PSF1, PSF2,
+                            s0=COARSE_SCALE, s=FINE_SCALE):
     x_fine_best1, x_fine_best2, x_fine_best3 = _fit_variogram_models(
         Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
-        L_constant, rate, H, W1, PSF1
+        L_constant, rate, H, W1, PSF1, s0, s
     )
     r1 = r_VV_kk(W1, s0, s, x_fine_best1, PSF1)  # 求点扩散函数取的s,PSF1=6
     r2 = r_VU_kl(W1, W2, s0, s, x_fine_best3, PSF1, PSF2)  # PSF2为24
@@ -745,15 +749,14 @@ def calculate_matrix(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_
 
 
 def DSCK_Regression_Sharpen(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
-                            L_constant, rate, H, W1, W2, PSF1, PSF2):
-    s0 = COARSE_SCALE
-    s = FINE_SCALE
+                            L_constant, rate, H, W1, W2, PSF1, PSF2,
+                            s0=COARSE_SCALE, s=FINE_SCALE):
     # 扩展 Coarse 和 Fine
     Coarse_extend = extend_plane(Coarse, W1)
     Fine_extend = extend_plane(Fine, W2)
     x_fine_best1, x_fine_best2, x_fine_best3 = _fit_variogram_models(
         Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
-        L_constant, rate, H, W1, PSF1
+        L_constant, rate, H, W1, PSF1, s0, s
     )
     # 计算参数
     # matrix_left, matrix_right = calculate_matrix(s0, s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2)

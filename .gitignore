@@ -27,6 +27,7 @@ dist/
 .ipynb_checkpoints/
 
 # Logs and temporary files
+data/
 tmp/
 *.log
 *.tmp
