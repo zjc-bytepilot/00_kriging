@@ -89,6 +89,30 @@ class VariogramServiceTest(unittest.TestCase):
 
         self.assertGreater(len(calls), 0)
 
+    def test_estimator_uses_model_residual_without_override(self) -> None:
+        class RecordingSelfModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def residual(
+                self,
+                parameters: np.ndarray,
+                distances: np.ndarray,
+                observed: np.ndarray,
+            ) -> np.ndarray:
+                self.calls += 1
+                return np.full(observed.shape, parameters[0]) - observed
+
+        model = RecordingSelfModel()
+        VariogramEstimator(model=model).fit(
+            np.zeros((3, 3)),
+            max_lag=1,
+            distances=np.array([1.0]),
+            initial=np.array([1.0, 1.0]),
+        )
+
+        self.assertGreater(model.calls, 0)
+
     def test_cross_estimator_records_lags_and_empirical_values(self) -> None:
         first = np.arange(16.0).reshape(4, 4)
         second = first * 2.0
@@ -115,6 +139,31 @@ class VariogramServiceTest(unittest.TestCase):
             atol=0,
         )
         self.assertEqual(fit.parameters.shape, (3,))
+
+    def test_cross_estimator_uses_its_self_model_for_self_fit(self) -> None:
+        class RecordingSelfModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def residual(
+                self,
+                parameters: np.ndarray,
+                distances: np.ndarray,
+                observed: np.ndarray,
+            ) -> np.ndarray:
+                self.calls += 1
+                return np.full(observed.shape, parameters[0]) - observed
+
+        self_model = RecordingSelfModel()
+        fit = CrossVariogramEstimator(self_model=self_model).fit(
+            np.arange(16.0).reshape(4, 4),
+            max_lag=2,
+            distances=np.array([1.0, 2.0]),
+            initial=np.array([1.0, 1.0]),
+        )
+
+        self.assertEqual(fit.parameters.shape, (2,))
+        self.assertGreater(self_model.calls, 0)
 
     def test_cross_estimator_uses_injected_empirical_kernel(self) -> None:
         calls: list[int] = []
