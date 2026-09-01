@@ -1,37 +1,17 @@
 try:
     from . import spatial as GSF
+    from .support import atprk_deconvolution, atprk_regularization
 except ImportError:  # 保留直接运行旧脚本时的兼容性
     import spatial as GSF
+    from support import atprk_deconvolution, atprk_regularization
 import numpy as np
 from numba import jit
-from scipy.optimize import least_squares
 from .systems import ATPRKSystemBuilder, KrigingSolver
 from .variogram import VariogramEstimator
 
-@jit(nopython=True)
-def r_area_area2(h, s, xX):
-
-    # Initialize the arrays
-    Assume_L1 = np.zeros((h + 1, 1))  # Array of size (h+1,)
-    M1, N1 = np.where(Assume_L1 == 0)  # Find indices where elements are zero (M1 and N1 are 1D arrays)
-    Assume_L2 = np.zeros((s, s))  # A square grid of size s
-    M2, N2 = np.where(Assume_L2 == 0)  # Find indices for the grid (M2 and N2 are 1D arrays)
-    # Initialize raa array to store semivariogram results
-    raa = np.zeros((h + 1, 1))
-    # Compute the semivariogram for each lag distance
-    for i in range(h + 1):
-        raa[i, 0] = 0  # Reset the value at index i
-        for m in range(s ** 2):
-            for n in range(s ** 2):
-                p1 = np.array([M1[i] * s + M2[m] + 0.5, N1[i] * s + N2[m] + 0.5])
-                p2 = np.array([M1[0] * s + M2[n] + 0.5, N1[0] * s + N2[n] + 0.5])
-                # Calculate the distance between points p1 and p2
-                distance = np.sqrt(np.sum((p1 - p2) ** 2))
-                # Add the result of the model function applied to the distance
-                raa[i, 0] += GSF.myfun(xX, distance)
-    # Normalize by s^4 (since the grid is s x s)
-    raa = raa / s ** 4
-    return raa
+# Legacy direct names point at the lower support layer without duplicating code.
+r_area_area2 = atprk_regularization
+ATP_deconvolution = atprk_deconvolution
 
 @jit(nopython=True)
 def r_fine_coarse2(p_vm, W, s, xX, PSF):
@@ -74,25 +54,6 @@ def T_coarse_coarse2(W, s, xX, PSF):
             # 更新 TVV 的值
             TVV[i, j] = np.sum(TvV * PSF)
     return TVV
-
-@jit(nopython=True)
-def ATP_deconvolution(H, s, x_area, Sill_min, Range_min, L_sill, L_range, rate):
-
-    # Apply the function to the coarse semivariogram
-    Fa0 = GSF.myfun(x_area, np.arange(1, s * H + 1))
-    Fa0_vector = Fa0[s - 1::s]  # Downsample by the scaling factor `s`
-    Dif_min = 10 ** 6  # Initialize a very large difference value
-    # Loop through all sill and range values to find the best match
-    for i in range(1, L_sill + 1):  # sill loop
-        for j in range(1, L_range + 1):  # range loop
-            xp = np.array([(Sill_min + rate * i) * x_area[0], (Range_min + rate * j) * x_area[1]])
-            raa0 = r_area_area2(H, s, xp)
-            raa = raa0[1:H + 1, 0] - raa0[0, 0]  # Compute the difference of area values
-            Dif = np.linalg.norm(raa - Fa0_vector)  # Compute the norm of the difference
-            if Dif <= Dif_min:
-                x_best = xp
-                Dif_min = Dif
-    return x_best
 
 def calculate_parameter(s, W, xX, PSF):
 
@@ -163,7 +124,7 @@ def ATPRK_Sharpen(Coarse, PAN, Sill_min, Range_min, L_sill, L_range, rate, H, w,
         initial=np.asarray(x0, dtype=float),
     )
     xa1 = fit.parameters
-    xp_best = ATP_deconvolution(H, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
+    xp_best = atprk_deconvolution(H, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
     yita1, RMSE0 = calculate_parameter(s, W, xp_best, PSF)
     P_vm, RMSE = calculate_coordinate(s, W, RB_extend, yita1, RMSE0)
     Z_ATPK = P_vm[W * s: -W * s, W * s: -W * s]
