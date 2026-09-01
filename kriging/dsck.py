@@ -233,12 +233,17 @@ def r_UU_kl(p_vm, W, s, xX, PSF):
         r6[i] = np.sum(r_uu_kl * PSF)
     return r6
 
+def _build_kriging_system(coarse_variogram, cross_variogram, fine_variogram):
+    """Adapt DSCK's legacy coefficient inputs to the shared system builder."""
+    return DSCKSystemBuilder.build(coarse_variogram, cross_variogram, fine_variogram)
+
+
 def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2):
 
     r1 = r_VV_kk(W1, s0, s, xX1, PSF1)  # 求点扩散函数取的s,PSF1=6
     r2 = r_VU_kl(W1, W2, s0, s, xX3, PSF1, PSF2)  # PSF2为24
     r4 = r_UU_ll(W2, s, xX2, PSF2)
-    system = DSCKSystemBuilder.build(r1, r2, r4)
+    system = _build_kriging_system(r1, r2, r4)
     coefficient_count = (2 * W1 + 1) ** 2 + (2 * W2 + 1) ** 2 + 2
     yita = np.zeros((s0, s0, coefficient_count))  # 用来存储结果
     for i in range(s0):
@@ -322,24 +327,15 @@ def calculate_matrix(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_
     )
     r1 = r_VV_kk(W1, s0, s, x_fine_best1, PSF1)  # 求点扩散函数取的s,PSF1=6
     r2 = r_VU_kl(W1, W2, s0, s, x_fine_best3, PSF1, PSF2)  # PSF2为24
-    r3 = r2.T  # 转置r2
     r4 = r_UU_ll(W2, s, x_fine_best2, PSF2)
-    # 修改后的Matrix构建
-    Matrix1 = np.hstack((r1, r2, np.ones(((2 * W1 + 1) ** 2, 1)), np.zeros(((2 * W1 + 1) ** 2, 1))))
-    Matrix2 = np.hstack((r3, r4, np.zeros(((2 * W2 + 1) ** 2, 1)), np.ones(((2 * W2 + 1) ** 2, 1))))
-    Matrix3 = np.hstack((np.ones((1, (2 * W1 + 1) ** 2)), np.zeros((1, (2 * W2 + 1) ** 2)), np.zeros((1, 2))))
-    Matrix4 = np.hstack((np.zeros((1, (2 * W1 + 1) ** 2)), np.ones((1, (2 * W2 + 1) ** 2)), np.zeros((1, 2))))
-    Matrix = np.vstack((Matrix1, Matrix2, Matrix3, Matrix4))
+    Matrix = _build_kriging_system(r1, r2, r4).matrix
     Vector = []
     for i in range(s0):
         for j in range(s0):
             cordinate_vm = np.array([W1 * s * s0 + s * (i + 1) - 1, W1 * s * s0 + s * (j + 1) - 1])
             r5 = r_UV_kk(cordinate_vm, W1, s0, s, x_fine_best1, PSF1)
             r6 = r_UU_kl(cordinate_vm, W2, s, x_fine_best3, PSF2)
-            r0 = np.zeros((2, 1))
-            r0[0] = 1
-            r0[1] = 0
-            vector = np.vstack((r5, r6, r0))
+            vector = DSCKSystemBuilder.rhs(r5, r6)
             Vector.append(vector)
     return Matrix, Vector
 
