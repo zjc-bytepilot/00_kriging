@@ -85,14 +85,15 @@ class CrossVariogramEstimator(VariogramEstimator):
 
     def __init__(
         self,
-        self_model: ExponentialVariogramModel | None = None,
-        cross_model: ExponentialCrossVariogramModel | None = None,
+        model: ExponentialCrossVariogramModel | None = None,
         empirical_kernel: EmpiricalKernel = spatial.semivariogram,
         cross_empirical_kernel: CrossEmpiricalKernel = spatial.cross_semivariogram,
+        residual_kernel: ResidualKernel | None = None,
+        *,
+        self_model: ExponentialVariogramModel | None = None,
+        cross_model: ExponentialCrossVariogramModel | None = None,
         self_residual_kernel: ResidualKernel | None = None,
         cross_residual_kernel: ResidualKernel | None = None,
-        model: ExponentialCrossVariogramModel | None = None,
-        residual_kernel: ResidualKernel | None = None,
     ) -> None:
         if cross_model is not None and model is not None:
             raise ValueError("cross_model 和 model 不能同时指定。")
@@ -103,7 +104,10 @@ class CrossVariogramEstimator(VariogramEstimator):
             empirical_kernel=empirical_kernel,
             residual_kernel=self_residual_kernel,
         )
+        self.self_model = self.model
         self.cross_model = cross_model or model or ExponentialCrossVariogramModel()
+        # Preserve the original public meaning of .model for direct callers.
+        self.model = self.cross_model
         self._cross_empirical_kernel = cross_empirical_kernel
         self._cross_residual_kernel = (
             cross_residual_kernel or residual_kernel or self.cross_model.residual

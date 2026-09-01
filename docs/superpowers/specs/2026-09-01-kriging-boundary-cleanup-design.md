@@ -25,6 +25,9 @@ a model changes fitting behavior. An optional residual-kernel override remains
 for numerical compatibility. `CrossVariogramEstimator` initialises its parent
 with a two-parameter self model/residual, separately stores a three-parameter
 cross model/residual, and uses the latter only in `fit_cross()`.
+Its original four positional constructor arguments and public `.model` meaning
+(the cross model) remain compatible; new self/cross extension points are
+keyword-only.
 
 ## Kriging systems
 

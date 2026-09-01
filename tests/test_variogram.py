@@ -165,6 +165,25 @@ class VariogramServiceTest(unittest.TestCase):
         self.assertEqual(fit.parameters.shape, (2,))
         self.assertGreater(self_model.calls, 0)
 
+    def test_cross_estimator_retains_legacy_positional_constructor(self) -> None:
+        cross_model = ExponentialCrossVariogramModel()
+        estimator = CrossVariogramEstimator(
+            cross_model,
+            spatial.semivariogram,
+            spatial.cross_semivariogram,
+            spatial.exponential_cross_variogram_residual,
+        )
+        fit = estimator.fit_cross(
+            np.arange(16.0).reshape(4, 4),
+            np.arange(16.0).reshape(4, 4),
+            max_lag=2,
+            distances=np.array([1.0, 2.0]),
+            initial=np.array([1.0, 1.0, 1.0]),
+        )
+
+        self.assertIs(estimator.model, cross_model)
+        self.assertEqual(fit.parameters.shape, (3,))
+
     def test_cross_estimator_uses_injected_empirical_kernel(self) -> None:
         calls: list[int] = []
 
