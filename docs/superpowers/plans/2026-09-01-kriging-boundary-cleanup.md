@@ -1,6 +1,6 @@
 # Kriging Boundary Cleanup Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Complete variogram, support-kernel, and system-builder boundaries while preserving public ATPRK and DSCK output within the locked regression tolerance.
 
@@ -30,7 +30,7 @@
 - Produces `CrossVariogramEstimator.fit()` with a two-value fit and `fit_cross()` with a three-value fit.
 - Produces `VariogramEstimator.fit()` defaulting to `model.residual` while retaining an explicit compatibility override.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_cross_estimator_retains_two_parameter_self_fit(self):
@@ -47,13 +47,13 @@ def test_estimator_uses_model_residual_without_override(self):
     self.assertTrue(model.was_called)
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m unittest tests.test_variogram -v`
 
 Expected: inherited cross self-fit receives a cross residual and the custom model residual is not called.
 
-- [ ] **Step 3: Implement the minimal split**
+- [x] **Step 3: Implement the minimal split**
 
 ```python
 super().__init__(model=self_model or ExponentialVariogramModel(),
@@ -65,11 +65,11 @@ self._cross_residual_kernel = cross_residual_kernel or self.cross_model.residual
 
 Make `fit_cross()` use `_cross_residual_kernel`; preserve optional explicit residual overrides for DSCK compatibility.
 
-- [ ] **Step 4: Verify GREEN and public outputs**
+- [x] **Step 4: Verify GREEN and public outputs**
 
 Run: `.venv/bin/python -m unittest tests.test_variogram tests.test_regression_baseline -v`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add kriging/variogram.py kriging/dsck.py tests/test_variogram.py
@@ -89,7 +89,7 @@ git commit -m "fix: separate self and cross variogram fitting"
 - Produces `support.atprk_regularization`, `support.atprk_deconvolution`, `support.regularization_{coarse,cross,fine}`, and `support.deconvolution_{coarse,cross,fine}`.
 - Consumes Numba-compatible `spatial.exponential_variogram` and `spatial.exponential_cross_variogram`.
 
-- [ ] **Step 1: Write failing ownership/equivalence tests**
+- [x] **Step 1: Write failing ownership/equivalence tests**
 
 ```python
 def test_support_owns_dsck_deconvolution_kernels(self):
@@ -99,21 +99,21 @@ def test_support_owns_dsck_deconvolution_kernels(self):
     np.testing.assert_allclose(actual, np.array([1.2, 2.4]), rtol=0, atol=0)
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m unittest tests.test_support -v`
 
 Expected: the kernel is still defined by `kriging.dsck`.
 
-- [ ] **Step 3: Implement lower dependency direction**
+- [x] **Step 3: Implement lower dependency direction**
 
 Move ATPRK's area regularization/deconvolution and DSCK's six regularization/deconvolution kernels to `support.py`. Import canonical spatial kernels there. Replace algorithm-local bodies with imports/aliases. Replace DSCK's duplicate spatial bodies with imports from `spatial.py`; retain legacy DSCK operation ordering in `spatial.py` before deleting the copies.
 
-- [ ] **Step 4: Verify focused and public-output tests**
+- [x] **Step 4: Verify focused and public-output tests**
 
 Run: `.venv/bin/python -m unittest tests.test_support tests.test_synthetic_smoke tests.test_regression_baseline -v`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add kriging/support.py kriging/spatial.py kriging/atprk.py kriging/dsck.py tests/test_support.py
@@ -129,33 +129,34 @@ git commit -m "refactor: move support kernels below algorithms"
 
 **Interfaces:**
 - Produces `DSCKSystemBuilder.build(coarse_variogram, cross_variogram, fine_variogram)`.
+- Produces `dsck._build_kriging_system(coarse_variogram, cross_variogram, fine_variogram)` as the legacy helper's tested adapter to the shared builder.
 - Produces `dsck.calculate_matrix()` whose matrix and each RHS use the shared builder.
 
-- [ ] **Step 1: Write a failing adapter test**
+- [x] **Step 1: Write a failing adapter test**
 
 ```python
-def test_dsck_builder_accepts_support_variograms(self):
-    system = DSCKSystemBuilder.build(np.eye(1), np.ones((1, 1)), np.eye(1))
+def test_legacy_dsck_adapter_returns_shared_system(self):
+    system = dsck._build_kriging_system(np.eye(1), np.ones((1, 1)), np.eye(1))
     np.testing.assert_array_equal(system.matrix[-2:],
                                   np.array([[1.0, 0.0, 0.0, 0.0],
                                             [0.0, 1.0, 0.0, 0.0]]))
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `.venv/bin/python -m unittest tests.test_systems -v`
 
-Expected: the new interface/adapter coverage is absent before implementation.
+Expected: `dsck._build_kriging_system` does not exist before implementation.
 
-- [ ] **Step 3: Implement builder routing**
+- [x] **Step 3: Implement builder routing**
 
-Rename builder arguments to `*_variogram`. In `calculate_matrix()`, replace manual `hstack`/`vstack` construction with `DSCKSystemBuilder.build(...)` and manual constraints with `DSCKSystemBuilder.rhs(...)`. Keep its existing `(matrix, vectors)` return type for `tools/cal_kringing_matrix.py`.
+Rename builder arguments to `*_variogram`. Add `_build_kriging_system()` that returns `DSCKSystemBuilder.build(...)`. In `calculate_matrix()`, call that adapter rather than manually using `hstack`/`vstack`, and create constraints with `DSCKSystemBuilder.rhs(...)`. Keep its existing `(matrix, vectors)` return type for `tools/cal_kringing_matrix.py`.
 
-- [ ] **Step 4: Verify full suite**
+- [x] **Step 4: Verify full suite**
 
 Run: `.venv/bin/python -m unittest discover -v`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add kriging/systems.py kriging/dsck.py tests/test_systems.py
@@ -169,17 +170,17 @@ git commit -m "refactor: route legacy DSCK matrix helper through builder"
 - Modify: `docs/superpowers/specs/2026-09-01-kriging-boundary-cleanup-design.md`
 - Modify: `docs/superpowers/plans/2026-09-01-kriging-boundary-cleanup.md`
 
-- [ ] **Step 1: Add a focused architecture note**
+- [x] **Step 1: Add a focused architecture note**
 
 State that GPU/backend work is intentionally deferred and the public interpolator interface stays stable while `spatial.py`, `support.py`, and `systems.py` can acquire backend-specific implementations later.
 
-- [ ] **Step 2: Verify repository state**
+- [x] **Step 2: Verify repository state**
 
 Run: `git diff --check && .venv/bin/python -m unittest discover -v && git status --short`
 
 Expected: no whitespace errors and no test failures.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md docs/superpowers/specs/2026-09-01-kriging-boundary-cleanup-design.md docs/superpowers/plans/2026-09-01-kriging-boundary-cleanup.md
