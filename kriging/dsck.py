@@ -1,6 +1,7 @@
 import numpy as np
 from numba import jit
 from scipy.optimize import least_squares
+from .systems import DSCKSystemBuilder, KrigingSolver
 
 
 # 当前数据集的固定空间尺度。集中定义，避免在多个流程中重复魔法数字。
@@ -634,13 +635,12 @@ def r_UU_kl(p_vm, W, s, xX, PSF):
         r6[i] = np.sum(r_uu_kl * PSF)
     return r6
 
-@jit(nopython=True)
 def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2):
 
     r1 = r_VV_kk(W1, s0, s, xX1, PSF1)  # 求点扩散函数取的s,PSF1=6
     r2 = r_VU_kl(W1, W2, s0, s, xX3, PSF1, PSF2)  # PSF2为24
-    r3 = r2.T  # 转置r2
     r4 = r_UU_ll(W2, s, xX2, PSF2)
+    system = DSCKSystemBuilder.build(r1, r2, r4)
     coefficient_count = (2 * W1 + 1) ** 2 + (2 * W2 + 1) ** 2 + 2
     yita = np.zeros((s0, s0, coefficient_count))  # 用来存储结果
     for i in range(s0):
@@ -648,18 +648,8 @@ def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2):
             cordinate_vm = np.array([W1 * s * s0 + s *( i + 1) - 1, W1 * s * s0 + s * (j + 1) - 1])
             r5 = r_UV_kk(cordinate_vm, W1, s0, s, xX1, PSF1)
             r6 = r_UU_kl(cordinate_vm, W2, s, xX3, PSF2)
-            # 修改后的Matrix构建
-            Matrix1 = np.hstack((r1, r2, np.ones(((2 * W1 + 1) ** 2, 1)), np.zeros(((2 * W1 + 1) ** 2, 1))))
-            Matrix2 = np.hstack((r3, r4, np.zeros(((2 * W2 + 1) ** 2, 1)), np.ones(((2 * W2 + 1) ** 2, 1))))
-            Matrix3 = np.hstack((np.ones((1, (2 * W1 + 1) ** 2)), np.zeros((1, (2 * W2 + 1) ** 2)), np.zeros((1, 2))))
-            Matrix4 = np.hstack((np.zeros((1, (2 * W1 + 1) ** 2)), np.ones((1, (2 * W2 + 1) ** 2)), np.zeros((1, 2))))
-            Matrix = np.vstack((Matrix1, Matrix2, Matrix3, Matrix4))
-            r0 = np.zeros((2, 1))
-            r0[0] = 1
-            r0[1] = 0
-            Vector = np.vstack((r5, r6, r0))
-            # 解方程：yita = inv(Matrix) * Vector
-            yita[i, j, :] = np.linalg.inv(Matrix).dot(Vector).flatten()
+            Vector = DSCKSystemBuilder.rhs(r5, r6)
+            yita[i, j, :] = KrigingSolver.solve(system.matrix, Vector).flatten()
     return yita
 
 @jit(nopython=True)
@@ -766,5 +756,4 @@ def DSCK_Regression_Sharpen(Coarse, Fine, Constant_min, Sill_min, Range_min, L_s
     # 返回结果
     Z0 = P_vm[W1 * s0: -W1 * s0, W1 * s0: -W1 * s0]
     return Z0
-
 
