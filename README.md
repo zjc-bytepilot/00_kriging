@@ -97,3 +97,15 @@ SMP 土壤湿度数据可使用内置预设绘图：
 
 `tests/fixtures/kriging_regression_baseline.npz` 保存重构前的 ATPRK 和 DSCK
 输出。后续架构与性能优化必须与该基线在 `rtol=1e-8`、`atol=1e-10` 内一致。
+
+## 性能基准
+
+以下命令在固定合成数据上先完成一次预热，再输出每次运行的平均耗时 JSON：
+
+```bash
+.venv/bin/python -m tools.benchmark_kriging --method both --repeats 2
+```
+
+当前版本会把每个波段内不变的 ATPRK/DSCK 系统矩阵移到子像素循环外，并用
+`numpy.linalg.solve` 替代显式矩阵求逆。变异函数公式、PSF、反卷积搜索空间和
+配置/API 均保持兼容；GPU 加速不在本轮范围内。
