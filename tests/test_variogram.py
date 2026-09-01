@@ -56,6 +56,39 @@ class VariogramServiceTest(unittest.TestCase):
         )
         self.assertEqual(fit.parameters.shape, (2,))
 
+    def test_self_estimator_uses_injected_empirical_kernel(self) -> None:
+        calls: list[int] = []
+
+        def empirical_kernel(plane: np.ndarray, lag: int) -> float:
+            calls.append(lag)
+            return float(lag * 10)
+
+        fit = VariogramEstimator(empirical_kernel=empirical_kernel).fit(
+            np.zeros((3, 3)),
+            max_lag=2,
+            distances=np.array([1.0, 2.0]),
+            initial=np.array([1.0, 1.0]),
+        )
+
+        self.assertEqual(calls, [1, 2])
+        np.testing.assert_array_equal(fit.empirical_values, np.array([10.0, 20.0]))
+
+    def test_self_estimator_uses_injected_residual_kernel(self) -> None:
+        calls: list[np.ndarray] = []
+
+        def residual_kernel(parameters: np.ndarray, distances: np.ndarray, observed: np.ndarray) -> np.ndarray:
+            calls.append(parameters.copy())
+            return parameters[:1] - observed
+
+        VariogramEstimator(residual_kernel=residual_kernel).fit(
+            np.zeros((3, 3)),
+            max_lag=1,
+            distances=np.array([1.0]),
+            initial=np.array([1.0, 1.0]),
+        )
+
+        self.assertGreater(len(calls), 0)
+
     def test_cross_estimator_records_lags_and_empirical_values(self) -> None:
         first = np.arange(16.0).reshape(4, 4)
         second = first * 2.0
@@ -82,3 +115,21 @@ class VariogramServiceTest(unittest.TestCase):
             atol=0,
         )
         self.assertEqual(fit.parameters.shape, (3,))
+
+    def test_cross_estimator_uses_injected_empirical_kernel(self) -> None:
+        calls: list[int] = []
+
+        def empirical_kernel(first: np.ndarray, second: np.ndarray, lag: int) -> float:
+            calls.append(lag)
+            return float(lag * 10)
+
+        fit = CrossVariogramEstimator(cross_empirical_kernel=empirical_kernel).fit_cross(
+            np.zeros((3, 3)),
+            np.zeros((3, 3)),
+            max_lag=2,
+            distances=np.array([1.0, 2.0]),
+            initial=np.array([1.0, 1.0, 1.0]),
+        )
+
+        self.assertEqual(calls, [1, 2])
+        np.testing.assert_array_equal(fit.empirical_values, np.array([10.0, 20.0]))

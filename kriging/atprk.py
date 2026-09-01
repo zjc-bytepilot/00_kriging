@@ -6,6 +6,7 @@ import numpy as np
 from numba import jit
 from scipy.optimize import least_squares
 from .systems import ATPRKSystemBuilder, KrigingSolver
+from .variogram import VariogramEstimator
 
 @jit(nopython=True)
 def r_area_area2(h, s, xX):
@@ -155,10 +156,13 @@ def ATPRK_Sharpen(Coarse, PAN, Sill_min, Range_min, L_sill, L_range, rate, H, w,
     W = w
     RB_extend = GSF.extend_plane(RB, W)
     x0 = [100, 1]  # Initial values for fitting
-    rh = [GSF.semivariogram(RB, t) for t in range(1, H + 1)]
-    # Fit the model using least squares
-    result = least_squares(GSF.myfun_fit, x0, args=(np.arange(s, s * H + 1, s), rh))
-    xa1 = result.x
+    fit = VariogramEstimator().fit(
+        RB,
+        max_lag=H,
+        distances=np.arange(s, s * H + 1, s),
+        initial=np.asarray(x0, dtype=float),
+    )
+    xa1 = fit.parameters
     xp_best = ATP_deconvolution(H, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
     yita1, RMSE0 = calculate_parameter(s, W, xp_best, PSF)
     P_vm, RMSE = calculate_coordinate(s, W, RB_extend, yita1, RMSE0)
