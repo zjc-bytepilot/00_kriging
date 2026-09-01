@@ -146,7 +146,9 @@ def test_exponential_models_match_legacy_spatial_functions() -> None:
 def test_cross_estimator_uses_expected_lags_and_empirical_values() -> None:
     first = np.arange(16.0).reshape(4, 4)
     second = first * 2.0
-    fit = CrossVariogramEstimator().fit(first, second, max_lag=2, distances=np.array([3, 6]))
+    fit = CrossVariogramEstimator().fit_cross(
+        first, second, max_lag=2, distances=np.array([3, 6]), initial=np.array([10.0, 100.0, 1.0])
+    )
     np.testing.assert_array_equal(fit.lags, np.array([3, 6]))
     assert fit.parameters.shape == (3,)
 ```
