@@ -5,6 +5,8 @@ except ImportError:  # 保留直接运行旧脚本时的兼容性
 import numpy as np
 from numba import jit
 from scipy.optimize import least_squares
+from .systems import ATPRKSystemBuilder, KrigingSolver
+from .variogram import VariogramEstimator
 
 @jit(nopython=True)
 def r_area_area2(h, s, xX):
@@ -92,23 +94,18 @@ def ATP_deconvolution(H, s, x_area, Sill_min, Range_min, L_sill, L_range, rate):
                 Dif_min = Dif
     return x_best
 
-@jit(nopython=True)
 def calculate_parameter(s, W, xX, PSF):
 
     TVV = T_coarse_coarse2(W, s, xX, PSF)
+    system = ATPRKSystemBuilder.build(TVV)
     yita = np.zeros((s, s, (2 * W + 1) ** 2 + 1))  # 用于存储结果
     RMSE = np.zeros((s, s))  # 用于存储 RMSE 结果
     for i in range(s):
         for j in range(s):
             cordinate_vm = np.array([W * s + i + 0.5, W * s + j + 0.5])
             rvV = r_fine_coarse2(cordinate_vm, W, s, xX, PSF)
-            # 拼接矩阵
-            Matrix1 = np.hstack((TVV, np.ones(((2 * W + 1) ** 2, 1))))
-            Matrix2 = np.hstack((np.ones((1, (2 * W + 1) ** 2)), np.zeros((1, 1))))
-            Matrix = np.vstack((Matrix1, Matrix2))
-            Vector = np.vstack((rvV, np.ones((1, 1))))  # 拼接向量
-            # 计算 yita(i, j, :)
-            yita[i, j, :] = np.linalg.inv(Matrix).dot(Vector).flatten()
+            Vector = ATPRKSystemBuilder.rhs(rvV)
+            yita[i, j, :] = KrigingSolver.solve(system.matrix, Vector).flatten()
             # 计算 2D RMSE
             yita_2D = yita[i, j, :].flatten()
             RMSE[i, j] = yita_2D.dot(Vector.flatten())  # 计算 RMSE
@@ -159,10 +156,13 @@ def ATPRK_Sharpen(Coarse, PAN, Sill_min, Range_min, L_sill, L_range, rate, H, w,
     W = w
     RB_extend = GSF.extend_plane(RB, W)
     x0 = [100, 1]  # Initial values for fitting
-    rh = [GSF.semivariogram(RB, t) for t in range(1, H + 1)]
-    # Fit the model using least squares
-    result = least_squares(GSF.myfun_fit, x0, args=(np.arange(s, s * H + 1, s), rh))
-    xa1 = result.x
+    fit = VariogramEstimator().fit(
+        RB,
+        max_lag=H,
+        distances=np.arange(s, s * H + 1, s),
+        initial=np.asarray(x0, dtype=float),
+    )
+    xa1 = fit.parameters
     xp_best = ATP_deconvolution(H, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
     yita1, RMSE0 = calculate_parameter(s, W, xp_best, PSF)
     P_vm, RMSE = calculate_coordinate(s, W, RB_extend, yita1, RMSE0)

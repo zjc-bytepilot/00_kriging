@@ -1,6 +1,8 @@
 import numpy as np
 from numba import jit
 from scipy.optimize import least_squares
+from .systems import DSCKSystemBuilder, KrigingSolver
+from .variogram import CrossVariogramEstimator, VariogramEstimator
 
 
 # 当前数据集的固定空间尺度。集中定义，避免在多个流程中重复魔法数字。
@@ -634,13 +636,12 @@ def r_UU_kl(p_vm, W, s, xX, PSF):
         r6[i] = np.sum(r_uu_kl * PSF)
     return r6
 
-@jit(nopython=True)
 def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2):
 
     r1 = r_VV_kk(W1, s0, s, xX1, PSF1)  # 求点扩散函数取的s,PSF1=6
     r2 = r_VU_kl(W1, W2, s0, s, xX3, PSF1, PSF2)  # PSF2为24
-    r3 = r2.T  # 转置r2
     r4 = r_UU_ll(W2, s, xX2, PSF2)
+    system = DSCKSystemBuilder.build(r1, r2, r4)
     coefficient_count = (2 * W1 + 1) ** 2 + (2 * W2 + 1) ** 2 + 2
     yita = np.zeros((s0, s0, coefficient_count))  # 用来存储结果
     for i in range(s0):
@@ -648,18 +649,8 @@ def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2):
             cordinate_vm = np.array([W1 * s * s0 + s *( i + 1) - 1, W1 * s * s0 + s * (j + 1) - 1])
             r5 = r_UV_kk(cordinate_vm, W1, s0, s, xX1, PSF1)
             r6 = r_UU_kl(cordinate_vm, W2, s, xX3, PSF2)
-            # 修改后的Matrix构建
-            Matrix1 = np.hstack((r1, r2, np.ones(((2 * W1 + 1) ** 2, 1)), np.zeros(((2 * W1 + 1) ** 2, 1))))
-            Matrix2 = np.hstack((r3, r4, np.zeros(((2 * W2 + 1) ** 2, 1)), np.ones(((2 * W2 + 1) ** 2, 1))))
-            Matrix3 = np.hstack((np.ones((1, (2 * W1 + 1) ** 2)), np.zeros((1, (2 * W2 + 1) ** 2)), np.zeros((1, 2))))
-            Matrix4 = np.hstack((np.zeros((1, (2 * W1 + 1) ** 2)), np.ones((1, (2 * W2 + 1) ** 2)), np.zeros((1, 2))))
-            Matrix = np.vstack((Matrix1, Matrix2, Matrix3, Matrix4))
-            r0 = np.zeros((2, 1))
-            r0[0] = 1
-            r0[1] = 0
-            Vector = np.vstack((r5, r6, r0))
-            # 解方程：yita = inv(Matrix) * Vector
-            yita[i, j, :] = np.linalg.inv(Matrix).dot(Vector).flatten()
+            Vector = DSCKSystemBuilder.rhs(r5, r6)
+            yita[i, j, :] = KrigingSolver.solve(system.matrix, Vector).flatten()
     return yita
 
 @jit(nopython=True)
@@ -699,19 +690,27 @@ def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
     x1 = np.array([10, 100, 1])
     # 退化为低空间分辨率
     Fine_up = downsample_plane(Fine, s0, W1, PSF1)
-    # 计算 semivariogram
-    rh1 = [semivariogram(Coarse, t) for t in range(1, H + 1)]
-    rh2 = [semivariogram(Fine, t) for t in range(1, H + 1)]
-    rh3 = [semivariogram_cross(Coarse, Fine_up, t) for t in range(1, H + 1)]
-    # 使用最小二乘法拟合
-    result1 = least_squares(myfun_fit, x0, args=(np.arange(s * s0, s * s0 * H + 1, s * s0), rh1))
-    xa1 = result1.x
+    self_estimator = VariogramEstimator(
+        empirical_kernel=semivariogram,
+        residual_kernel=myfun_fit,
+    )
+    cross_estimator = CrossVariogramEstimator(
+        empirical_kernel=semivariogram,
+        cross_empirical_kernel=semivariogram_cross,
+        residual_kernel=myfun2_fit,
+    )
+    coarse_fit = self_estimator.fit(
+        Coarse, H, np.arange(s * s0, s * s0 * H + 1, s * s0), x0
+    )
+    xa1 = coarse_fit.parameters
     x_fine_best1 = deconvolution_coarse(H, s0, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
-    result2 = least_squares(myfun_fit, x0, args=(np.arange(s, s * H + 1, s), rh2))
-    xa2 = result2.x
+    fine_fit = self_estimator.fit(Fine, H, np.arange(s, s * H + 1, s), x0)
+    xa2 = fine_fit.parameters
     x_fine_best2 = deconvolution_fine(H, s, xa2, Sill_min, Range_min, L_sill, L_range, rate)
-    result3 = least_squares(myfun2_fit, x1, args=(np.arange(s * s0, s * s0 * H + 1, s * s0), rh3))
-    xa3 = result3.x
+    cross_fit = cross_estimator.fit_cross(
+        Coarse, Fine_up, H, np.arange(s * s0, s * s0 * H + 1, s * s0), x1
+    )
+    xa3 = cross_fit.parameters
     x_fine_best3 = deconvolution_cross(H, s0, s, xa3, Constant_min, Sill_min, Range_min, L_sill, L_range, L_constant,
                                        rate)
     return x_fine_best1, x_fine_best2, x_fine_best3
@@ -766,5 +765,3 @@ def DSCK_Regression_Sharpen(Coarse, Fine, Constant_min, Sill_min, Range_min, L_s
     # 返回结果
     Z0 = P_vm[W1 * s0: -W1 * s0, W1 * s0: -W1 * s0]
     return Z0
-
-

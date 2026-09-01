@@ -80,6 +80,13 @@ class ATPRKInterpolator:
     def __init__(self, config: ATPRKConfig, search: SearchConfig) -> None:
         self.config = config
         self.search = search
+        self._psf_by_scale: dict[int, np.ndarray] = {}
+
+    def _psf_for_scale(self, scale: int) -> np.ndarray:
+        return self._psf_by_scale.setdefault(
+            scale,
+            gaussian_psf(scale, self.config.window, self.config.psf_sigma),
+        )
 
     def sharpen_band(self, coarse: np.ndarray, fine: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if coarse.ndim != 2 or fine.ndim != 2:
@@ -90,7 +97,7 @@ class ATPRKInterpolator:
         column_scale = fine.shape[1] // coarse.shape[1]
         if row_scale != column_scale:
             raise ValueError("ATPRK 仅支持行列缩放比例相同的数据。")
-        psf = gaussian_psf(row_scale, self.config.window, self.config.psf_sigma)
+        psf = self._psf_for_scale(row_scale)
         search = self.search
         return atprk.ATPRK_Sharpen(
             coarse, fine,

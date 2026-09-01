@@ -26,6 +26,19 @@ Sharpening.py            命令行入口
 
 配置文件使用普通 Python `CONFIG` 字典。退化数据实验会读取标签并计算指标：
 
+### 创建环境
+
+项目核心依赖固定在 `requirements.txt`。推荐使用项目目录内的虚拟环境：
+
+```bash
+/usr/bin/python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+下面的命令将 `.venv/bin/python` 替换为你已激活环境中的 Python 也可运行。
+
+### 运行实验
+
 ```powershell
 .venv\Scripts\python.exe Sharpening.py --config config\degraded.py
 ```
@@ -73,3 +86,26 @@ SMP 土壤湿度数据可使用内置预设绘图：
 默认图片保存到 `tmp/visualizations/`。其他单波段 GeoTIFF 可以使用
 `--preset generic`，并通过 `--band`、`--cmap`、`--vmin`、`--vmax`、
 `--title` 和 `--colorbar-label` 调整显示。
+
+## 测试
+
+使用合成数据运行完整回归测试：
+
+```bash
+.venv/bin/python -m unittest discover -v
+```
+
+`tests/fixtures/kriging_regression_baseline.npz` 保存重构前的 ATPRK 和 DSCK
+输出。后续架构与性能优化必须与该基线在 `rtol=1e-8`、`atol=1e-10` 内一致。
+
+## 性能基准
+
+以下命令在固定合成数据上先完成一次预热，再输出每次运行的平均耗时 JSON：
+
+```bash
+.venv/bin/python -m tools.benchmark_kriging --method both --repeats 2
+```
+
+当前版本会把每个波段内不变的 ATPRK/DSCK 系统矩阵移到子像素循环外，并用
+`numpy.linalg.solve` 替代显式矩阵求逆。变异函数公式、PSF、反卷积搜索空间和
+配置/API 均保持兼容；GPU 加速不在本轮范围内。
