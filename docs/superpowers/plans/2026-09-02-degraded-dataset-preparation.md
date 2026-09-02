@@ -230,4 +230,3 @@ git commit -m "feat: add degradation dataset preparation CLI"
 - Spec coverage: Task 1 implements serial pairing and input validation; Task 2 implements the required direct `downsample_plane` processing, no-alignment profile behavior, output names, and overwrite protection; Task 3 implements multi-pair invocation and provenance manifest.
 - Placeholder scan: all task steps name concrete files, APIs, commands, assertions, output names, and errors; no TBD/TODO markers remain.
 - Type consistency: Task 1's `DegradedPair` feeds Task 2; Task 2's `process_pair` dictionary feeds Task 3's manifest construction; CLI arguments exactly match the design document.
-

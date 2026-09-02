@@ -82,4 +82,3 @@ python -m tools.prepare_degraded_dataset \
 - label 保持原 Landsat 像元值；
 - 输出尺寸、仿射变换和文件命名正确；
 - 缺失配对与重复序号产生明确错误。
-
