@@ -55,11 +55,11 @@ class VariogramEstimator:
         self,
         model: ExponentialVariogramModel | None = None,
         empirical_kernel: EmpiricalKernel = spatial.semivariogram,
-        residual_kernel: ResidualKernel = spatial.exponential_variogram_residual,
+        residual_kernel: ResidualKernel | None = None,
     ) -> None:
         self.model = model or ExponentialVariogramModel()
         self._empirical_kernel = empirical_kernel
-        self._residual_kernel = residual_kernel
+        self._residual_kernel = residual_kernel or self.model.residual
 
     def empirical(self, plane: np.ndarray, max_lag: int) -> np.ndarray:
         return np.asarray([self._empirical_kernel(plane, lag) for lag in range(1, max_lag + 1)])
@@ -88,12 +88,30 @@ class CrossVariogramEstimator(VariogramEstimator):
         model: ExponentialCrossVariogramModel | None = None,
         empirical_kernel: EmpiricalKernel = spatial.semivariogram,
         cross_empirical_kernel: CrossEmpiricalKernel = spatial.cross_semivariogram,
-        residual_kernel: ResidualKernel = spatial.exponential_cross_variogram_residual,
+        residual_kernel: ResidualKernel | None = None,
+        *,
+        self_model: ExponentialVariogramModel | None = None,
+        cross_model: ExponentialCrossVariogramModel | None = None,
+        self_residual_kernel: ResidualKernel | None = None,
+        cross_residual_kernel: ResidualKernel | None = None,
     ) -> None:
-        self.model = model or ExponentialCrossVariogramModel()
-        self._empirical_kernel = empirical_kernel
+        if cross_model is not None and model is not None:
+            raise ValueError("cross_model 和 model 不能同时指定。")
+        if cross_residual_kernel is not None and residual_kernel is not None:
+            raise ValueError("cross_residual_kernel 和 residual_kernel 不能同时指定。")
+        super().__init__(
+            model=self_model or ExponentialVariogramModel(),
+            empirical_kernel=empirical_kernel,
+            residual_kernel=self_residual_kernel,
+        )
+        self.self_model = self.model
+        self.cross_model = cross_model or model or ExponentialCrossVariogramModel()
+        # Preserve the original public meaning of .model for direct callers.
+        self.model = self.cross_model
         self._cross_empirical_kernel = cross_empirical_kernel
-        self._residual_kernel = residual_kernel
+        self._cross_residual_kernel = (
+            cross_residual_kernel or residual_kernel or self.cross_model.residual
+        )
 
     def empirical_cross(self, first: np.ndarray, second: np.ndarray, max_lag: int) -> np.ndarray:
         return np.asarray(
@@ -109,7 +127,11 @@ class CrossVariogramEstimator(VariogramEstimator):
         initial: np.ndarray,
     ) -> VariogramFit:
         empirical_values = self.empirical_cross(first, second, max_lag)
-        result = least_squares(self._residual_kernel, initial, args=(distances, empirical_values))
+        result = least_squares(
+            self._cross_residual_kernel,
+            initial,
+            args=(distances, empirical_values),
+        )
         return VariogramFit(
             parameters=np.asarray(result.x),
             lags=np.asarray(distances),

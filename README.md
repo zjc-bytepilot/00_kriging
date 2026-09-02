@@ -16,9 +16,12 @@ kriging/data.py          GeoTIFF 数据读取与结果保存
 kriging/metrics.py       光谱质量指标
 kriging/estimators.py    面向对象算法接口
 kriging/pipeline.py      实验编排
-kriging/dsck.py          DSCK 底层数值核
-kriging/atprk.py         ATPRK 底层数值核
-kriging/spatial.py       两种算法共用的 PSF、降采样和半变异函数
+kriging/variogram.py     自/交叉半变异函数拟合服务
+kriging/spatial.py       唯一的空间与变异函数数值核来源
+kriging/support.py       支撑尺度正则化与反卷积数值核
+kriging/systems.py       固定克里金系统构建与线性求解
+kriging/dsck.py          DSCK 算法编排和系数/RHS 数值核
+kriging/atprk.py         ATPRK 算法编排和系数/RHS 数值核
 Sharpening.py            命令行入口
 ```
 
@@ -109,3 +112,12 @@ SMP 土壤湿度数据可使用内置预设绘图：
 当前版本会把每个波段内不变的 ATPRK/DSCK 系统矩阵移到子像素循环外，并用
 `numpy.linalg.solve` 替代显式矩阵求逆。变异函数公式、PSF、反卷积搜索空间和
 配置/API 均保持兼容；GPU 加速不在本轮范围内。
+
+## 数值边界
+
+CPU 数值层按职责划分为 `spatial.py`（空间/变异函数原语）、`support.py`（支撑
+尺度核）和 `systems.py`（克里金方程组）。公开的 `ATPRKInterpolator` 与
+`DSCKInterpolator` 接口保持不变。为了精确保留 DSCK 历史上的浮点运算顺序，
+`spatial.py` 显式提供 legacy residual 核供 DSCK 注入；这不是重复实现，后续
+backend/GPU 版本也应在同一边界中实现。GPU 批量求解与自适应邻域将在后续阶段
+单独设计。

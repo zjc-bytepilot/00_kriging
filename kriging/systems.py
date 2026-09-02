@@ -23,46 +23,46 @@ class KrigingSolver:
 
 
 class ATPRKSystemBuilder:
-    """Build the one-constraint ATPRK coefficient system."""
+    """Build the one-constraint ATPRK support-variogram system."""
 
     @staticmethod
-    def build(covariance: np.ndarray) -> KrigingSystem:
-        count = covariance.shape[0]
+    def build(coarse_variogram: np.ndarray) -> KrigingSystem:
+        count = coarse_variogram.shape[0]
         matrix = np.block(
             [
-                [covariance, np.ones((count, 1))],
+                [coarse_variogram, np.ones((count, 1))],
                 [np.ones((1, count)), np.zeros((1, 1))],
             ]
         )
         return KrigingSystem(matrix=matrix)
 
     @staticmethod
-    def rhs(fine_to_coarse_covariance: np.ndarray) -> np.ndarray:
-        return np.vstack((fine_to_coarse_covariance, np.ones((1, 1))))
+    def rhs(fine_to_coarse_variogram: np.ndarray) -> np.ndarray:
+        return np.vstack((fine_to_coarse_variogram, np.ones((1, 1))))
 
 
 class DSCKSystemBuilder:
-    """Build the two-constraint DSCK block coefficient system."""
+    """Build the two-constraint DSCK support-variogram system."""
 
     @staticmethod
     def build(
-        coarse_covariance: np.ndarray,
-        cross_covariance: np.ndarray,
-        fine_covariance: np.ndarray,
+        coarse_variogram: np.ndarray,
+        cross_variogram: np.ndarray,
+        fine_variogram: np.ndarray,
     ) -> KrigingSystem:
-        coarse_count = coarse_covariance.shape[0]
-        fine_count = fine_covariance.shape[0]
+        coarse_count = coarse_variogram.shape[0]
+        fine_count = fine_variogram.shape[0]
         matrix = np.block(
             [
                 [
-                    coarse_covariance,
-                    cross_covariance,
+                    coarse_variogram,
+                    cross_variogram,
                     np.ones((coarse_count, 1)),
                     np.zeros((coarse_count, 1)),
                 ],
                 [
-                    cross_covariance.T,
-                    fine_covariance,
+                    cross_variogram.T,
+                    fine_variogram,
                     np.zeros((fine_count, 1)),
                     np.ones((fine_count, 1)),
                 ],
@@ -82,8 +82,8 @@ class DSCKSystemBuilder:
 
     @staticmethod
     def rhs(
-        fine_to_coarse_covariance: np.ndarray,
-        fine_to_fine_covariance: np.ndarray,
+        fine_to_coarse_variogram: np.ndarray,
+        fine_to_fine_variogram: np.ndarray,
     ) -> np.ndarray:
         constraints = np.array([[1.0], [0.0]])
-        return np.vstack((fine_to_coarse_covariance, fine_to_fine_covariance, constraints))
+        return np.vstack((fine_to_coarse_variogram, fine_to_fine_variogram, constraints))

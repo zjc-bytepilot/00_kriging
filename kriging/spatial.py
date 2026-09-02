@@ -69,6 +69,11 @@ def exponential_variogram_residual(parameters, distance, observed):
     return exponential_variogram(parameters, distance) - observed
 
 
+def legacy_exponential_variogram_residual(parameters, distance, observed):
+    """Preserve DSCK's historical NumPy residual operation order."""
+    return parameters[0] * (1 - np.exp(-distance / parameters[1])) - observed
+
+
 @jit(nopython=True)
 def exponential_cross_variogram(parameters, distance):
     """Exponential cross-semivariogram with a constant term."""
@@ -79,35 +84,58 @@ def exponential_cross_variogram_residual(parameters, distance, observed):
     return exponential_cross_variogram(parameters, distance) - observed
 
 
+def legacy_exponential_cross_variogram_residual(parameters, distance, observed):
+    """Preserve DSCK's historical NumPy cross-residual operation order."""
+    return parameters[0] + parameters[1] * (1 - np.exp(-distance / parameters[2])) - observed
+
+
 # Compatibility aliases used by the numerical kernels.
 myfun = exponential_variogram
-myfun_fit = exponential_variogram_residual
+myfun_fit = legacy_exponential_variogram_residual
 myfun2 = exponential_cross_variogram
-myfun2_fit = exponential_cross_variogram_residual
+myfun2_fit = legacy_exponential_cross_variogram_residual
 
 
 @jit(nopython=True)
 def semivariogram(plane, lag):
     """Estimate the omnidirectional semivariogram for one lag."""
     rows, columns = plane.shape
-    total = 0.0
-    count = 0
+    vertical_backward_total = 0.0
+    vertical_backward_count = 0
     for row in range(lag, rows):
         for column in range(columns):
-            total += (plane[row, column] - plane[row - lag, column]) ** 2
-            count += 1
+            vertical_backward_total += (plane[row, column] - plane[row - lag, column]) ** 2
+            vertical_backward_count += 1
+    vertical_forward_total = 0.0
+    vertical_forward_count = 0
     for row in range(rows - lag):
         for column in range(columns):
-            total += (plane[row, column] - plane[row + lag, column]) ** 2
-            count += 1
+            vertical_forward_total += (plane[row, column] - plane[row + lag, column]) ** 2
+            vertical_forward_count += 1
+    horizontal_backward_total = 0.0
+    horizontal_backward_count = 0
     for row in range(rows):
         for column in range(lag, columns):
-            total += (plane[row, column] - plane[row, column - lag]) ** 2
-            count += 1
+            horizontal_backward_total += (plane[row, column] - plane[row, column - lag]) ** 2
+            horizontal_backward_count += 1
+    horizontal_forward_total = 0.0
+    horizontal_forward_count = 0
     for row in range(rows):
         for column in range(columns - lag):
-            total += (plane[row, column] - plane[row, column + lag]) ** 2
-            count += 1
+            horizontal_forward_total += (plane[row, column] - plane[row, column + lag]) ** 2
+            horizontal_forward_count += 1
+    total = (
+        vertical_backward_total
+        + vertical_forward_total
+        + horizontal_backward_total
+        + horizontal_forward_total
+    )
+    count = (
+        vertical_backward_count
+        + vertical_forward_count
+        + horizontal_backward_count
+        + horizontal_forward_count
+    )
     return total / (2 * count)
 
 
@@ -115,28 +143,54 @@ def semivariogram(plane, lag):
 def cross_semivariogram(first, second, lag):
     """Estimate the omnidirectional cross-semivariogram for one lag."""
     rows, columns = first.shape
-    total = 0.0
-    count = 0
+    vertical_backward_total = 0.0
+    vertical_backward_count = 0
     for row in range(lag, rows):
         for column in range(columns):
-            total += ((first[row, column] - first[row - lag, column])
-                      * (second[row, column] - second[row - lag, column]))
-            count += 1
+            vertical_backward_total += (
+                (first[row, column] - first[row - lag, column])
+                * (second[row, column] - second[row - lag, column])
+            )
+            vertical_backward_count += 1
+    vertical_forward_total = 0.0
+    vertical_forward_count = 0
     for row in range(rows - lag):
         for column in range(columns):
-            total += ((first[row, column] - first[row + lag, column])
-                      * (second[row, column] - second[row + lag, column]))
-            count += 1
+            vertical_forward_total += (
+                (first[row, column] - first[row + lag, column])
+                * (second[row, column] - second[row + lag, column])
+            )
+            vertical_forward_count += 1
+    horizontal_backward_total = 0.0
+    horizontal_backward_count = 0
     for row in range(rows):
         for column in range(lag, columns):
-            total += ((first[row, column] - first[row, column - lag])
-                      * (second[row, column] - second[row, column - lag]))
-            count += 1
+            horizontal_backward_total += (
+                (first[row, column] - first[row, column - lag])
+                * (second[row, column] - second[row, column - lag])
+            )
+            horizontal_backward_count += 1
+    horizontal_forward_total = 0.0
+    horizontal_forward_count = 0
     for row in range(rows):
         for column in range(columns - lag):
-            total += ((first[row, column] - first[row, column + lag])
-                      * (second[row, column] - second[row, column + lag]))
-            count += 1
+            horizontal_forward_total += (
+                (first[row, column] - first[row, column + lag])
+                * (second[row, column] - second[row, column + lag])
+            )
+            horizontal_forward_count += 1
+    total = (
+        vertical_backward_total
+        + vertical_forward_total
+        + horizontal_backward_total
+        + horizontal_forward_total
+    )
+    count = (
+        vertical_backward_count
+        + vertical_forward_count
+        + horizontal_backward_count
+        + horizontal_forward_count
+    )
     return total / (2 * count)
 
 

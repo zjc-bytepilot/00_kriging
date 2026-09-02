@@ -6,6 +6,7 @@ import unittest
 
 import numpy as np
 
+from kriging import dsck
 from kriging.systems import ATPRKSystemBuilder, DSCKSystemBuilder, KrigingSolver
 
 
@@ -31,3 +32,15 @@ class KrigingSystemTest(unittest.TestCase):
         self.assertEqual(system.matrix.shape, (5, 5))
         np.testing.assert_array_equal(system.matrix[-2], np.array([1.0, 1.0, 0.0, 0.0, 0.0]))
         np.testing.assert_array_equal(system.matrix[-1], np.array([0.0, 0.0, 1.0, 0.0, 0.0]))
+
+    def test_legacy_dsck_adapter_returns_shared_system(self) -> None:
+        system = dsck._build_kriging_system(
+            np.eye(1),
+            np.ones((1, 1)),
+            np.eye(1),
+        )
+
+        np.testing.assert_array_equal(
+            system.matrix[-2:],
+            np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]),
+        )
