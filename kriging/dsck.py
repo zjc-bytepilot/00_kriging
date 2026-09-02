@@ -287,9 +287,6 @@ def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
                           L_sill, L_range, L_constant, rate, H, W1, PSF1,
                           s0=COARSE_SCALE, s=FINE_SCALE):
     """拟合并反卷积粗、细及交叉半变异模型。"""
-    # x0 和 x1 的初始值
-    x0 = np.array([100, 1])
-    x1 = np.array([10, 100, 1])
     # 退化为低空间分辨率
     Fine_up = downsample_plane(Fine, s0, W1, PSF1)
     self_estimator = VariogramEstimator(
@@ -301,17 +298,22 @@ def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
         cross_empirical_kernel=semivariogram_cross,
         residual_kernel=myfun2_fit,
     )
-    coarse_fit = self_estimator.fit(
-        Coarse, H, np.arange(s * s0, s * s0 * H + 1, s * s0), x0
-    )
+
+    coarse_dists = np.arange(s * s0, s * s0 * H + 1, s * s0)
+    fine_dists = np.arange(s, s * H + 1, s)
+    coarse_emp = self_estimator.empirical(Coarse, H)
+    fine_emp = self_estimator.empirical(Fine, H)
+    cross_emp = cross_estimator.empirical_cross(Coarse, Fine_up, H)
+    x0_coarse = np.array([float(coarse_emp[-1]), float(np.median(coarse_dists))])
+    x0_fine = np.array([float(fine_emp[-1]), float(np.median(fine_dists))])
+    x1_cross = np.array([0.0, float(cross_emp[-1]), float(np.median(coarse_dists))])
+    coarse_fit = self_estimator.fit(Coarse, H, coarse_dists, x0_coarse)
     xa1 = coarse_fit.parameters
     x_fine_best1 = deconvolution_coarse(H, s0, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
-    fine_fit = self_estimator.fit(Fine, H, np.arange(s, s * H + 1, s), x0)
+    fine_fit = self_estimator.fit(Fine, H, fine_dists, x0_fine)
     xa2 = fine_fit.parameters
     x_fine_best2 = deconvolution_fine(H, s, xa2, Sill_min, Range_min, L_sill, L_range, rate)
-    cross_fit = cross_estimator.fit_cross(
-        Coarse, Fine_up, H, np.arange(s * s0, s * s0 * H + 1, s * s0), x1
-    )
+    cross_fit = cross_estimator.fit_cross(Coarse, Fine_up, H, coarse_dists, x1_cross)
     xa3 = cross_fit.parameters
     x_fine_best3 = deconvolution_cross(H, s0, s, xa3, Constant_min, Sill_min, Range_min, L_sill, L_range, L_constant,
                                        rate)

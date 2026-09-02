@@ -3,10 +3,10 @@
 CONFIG = dict(
     mode="degraded",
     data=dict(
-        coarse_path="data/test",
-        fine_path="data/test",
-        label_path="data/label",
-        dates=["20231113"],
+        coarse_path="data/lan_gf_degraded/coarse",
+        fine_path="data/lan_gf_degraded/fine",
+        label_path="data/lan_gf_degraded/label",
+        dates=["01"],
         coarse_pattern="C{identifier}.tif",
         fine_pattern="F{identifier}.tif",
         label_pattern="L{identifier}.tif",
