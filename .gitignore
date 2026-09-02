@@ -13,6 +13,8 @@ htmlcov/
 venv/
 env/
 data/
+docs/
+tests/
 
 # Build and packaging output
 build/
