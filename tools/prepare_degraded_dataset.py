@@ -21,7 +21,7 @@ class DegradedPair:
 def _index_by_serial(directory: Path) -> dict[str, Path]:
     """Index GeoTIFFs in *directory*, rejecting invalid and duplicate names."""
     indexed: dict[str, Path] = {}
-    for path in sorted(directory.glob("*.tif")):
+    for path in sorted(path for path in directory.glob("*.tif") if path.is_file()):
         match = SERIAL_PATTERN.match(path.name)
         if match is None:
             raise ValueError(f"文件命名规则无效：{path.name}")
