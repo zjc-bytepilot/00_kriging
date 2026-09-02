@@ -5,7 +5,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator, Mapping
+
+import numpy as np
+import rasterio
+from affine import Affine
+
+from kriging.spatial import downsample_plane, gaussian_psf
 
 
 SERIAL_PATTERN = re.compile(r"^(?P<serial>\d+)_")
@@ -51,3 +57,101 @@ class DegradedPairDataset:
 
     def __iter__(self) -> Iterator[DegradedPair]:
         return iter(self.pairs)
+
+
+def _downsample_cube(
+    values: np.ndarray, *, scale: int, window: int, psf: np.ndarray
+) -> np.ndarray:
+    """Downsample each spectral band independently."""
+    return np.stack(
+        [
+            downsample_plane(values[:, :, band], scale, window, psf)
+            for band in range(values.shape[2])
+        ],
+        axis=-1,
+    )
+
+
+def _scaled_profile(
+    profile: Mapping[str, Any], values: np.ndarray, scale: int
+) -> dict[str, Any]:
+    """Return a GeoTIFF profile for values reduced by an integer scale."""
+    result = dict(profile)
+    result.update(
+        height=values.shape[0],
+        width=values.shape[1],
+        transform=profile["transform"] @ Affine.scale(scale),
+    )
+    return result
+
+
+class DegradationProcessor:
+    """Generate the fine, coarse, and label GeoTIFF triplet for one pair."""
+
+    def __init__(self, scale: int = 3, window: int = 1, psf_sigma: float = 1.0) -> None:
+        self.scale = scale
+        self.window = window
+        self.psf_sigma = psf_sigma
+        self.psf = gaussian_psf(scale, window, psf_sigma)
+
+    def process_pair(
+        self,
+        pair: DegradedPair,
+        output_root: str | Path,
+        overwrite: bool = False,
+    ) -> dict[str, str]:
+        """Write PSF-degraded GF6/Landsat rasters and the Landsat label."""
+        with rasterio.open(pair.gf6_path) as gf6_dataset:
+            gf6_profile = gf6_dataset.profile.copy()
+            gf6_values = np.moveaxis(gf6_dataset.read(), 0, -1)
+        with rasterio.open(pair.landsat_path) as landsat_dataset:
+            landsat_profile = landsat_dataset.profile.copy()
+            landsat_values = np.moveaxis(landsat_dataset.read(), 0, -1)
+
+        self._validate_shapes(gf6_values, landsat_values)
+
+        root = Path(output_root)
+        targets = {
+            "fine": root / "fine" / f"F{pair.serial}.tif",
+            "coarse": root / "coarse" / f"C{pair.serial}.tif",
+            "label": root / "label" / f"L{pair.serial}.tif",
+        }
+        if not overwrite:
+            existing = next((path for path in targets.values() if path.exists()), None)
+            if existing is not None:
+                raise FileExistsError(f"输出文件已存在：{existing}")
+
+        fine_values = _downsample_cube(
+            gf6_values, scale=self.scale, window=self.window, psf=self.psf
+        )
+        coarse_values = _downsample_cube(
+            landsat_values, scale=self.scale, window=self.window, psf=self.psf
+        )
+        profiles = {
+            "fine": _scaled_profile(gf6_profile, fine_values, self.scale),
+            "coarse": _scaled_profile(landsat_profile, coarse_values, self.scale),
+            "label": landsat_profile,
+        }
+        values = {
+            "fine": fine_values,
+            "coarse": coarse_values,
+            "label": landsat_values,
+        }
+        for name, path in targets.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(path, "w", **profiles[name]) as dataset:
+                dataset.write(np.moveaxis(values[name], -1, 0))
+
+        return {name: str(path) for name, path in targets.items()}
+
+    def _validate_shapes(self, gf6_values: np.ndarray, landsat_values: np.ndarray) -> None:
+        for name, values in (("GF6", gf6_values), ("Landsat", landsat_values)):
+            if values.shape[0] % self.scale or values.shape[1] % self.scale:
+                raise ValueError(f"{name} 的行列尺寸必须能被 scale 整除。")
+        if gf6_values.shape[2] != landsat_values.shape[2]:
+            raise ValueError("GF6 与 Landsat 的波段数必须相同。")
+        if (
+            gf6_values.shape[0] // self.scale,
+            gf6_values.shape[1] // self.scale,
+        ) != landsat_values.shape[:2]:
+            raise ValueError("GF6 下采样后的形状必须与 Landsat 形状一致。")
