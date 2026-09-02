@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
 import numpy as np
 import rasterio
@@ -155,3 +158,56 @@ class DegradationProcessor:
             gf6_values.shape[1] // self.scale,
         ) != landsat_values.shape[:2]:
             raise ValueError("GF6 下采样后的形状必须与 Landsat 形状一致。")
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for batch dataset preparation."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input-root", required=True, type=Path)
+    parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument("--scale", type=int, default=3)
+    parser.add_argument("--window", type=int, default=1)
+    parser.add_argument("--psf-sigma", type=float, default=1.0)
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args(argv)
+    if args.scale <= 0 or args.window <= 0 or args.psf_sigma <= 0:
+        parser.error("--scale、--window 和 --psf-sigma 必须大于 0")
+    return args
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Prepare every serial-paired source image and write its manifest."""
+    args = parse_args(argv)
+    dataset = DegradedPairDataset(args.input_root)
+    processor = DegradationProcessor(args.scale, args.window, args.psf_sigma)
+    manifest_path = args.output_root / "manifest.json"
+    if manifest_path.exists() and not args.overwrite:
+        raise FileExistsError(f"输出文件已存在：{manifest_path}")
+
+    pairs: list[dict[str, str]] = []
+    for pair in dataset:
+        outputs = processor.process_pair(pair, args.output_root, overwrite=args.overwrite)
+        pairs.append(
+            {
+                "serial": pair.serial,
+                "gf6_source": str(pair.gf6_path),
+                "landsat_source": str(pair.landsat_path),
+                **outputs,
+            }
+        )
+
+    manifest = {
+        "scale": args.scale,
+        "window": args.window,
+        "psf_sigma": args.psf_sigma,
+        "pairs": pairs,
+    }
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    json.dump({"output_root": str(args.output_root), "pair_count": len(pairs)}, sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

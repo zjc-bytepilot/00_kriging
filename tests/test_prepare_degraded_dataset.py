@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -7,7 +8,12 @@ from affine import Affine
 from numpy.testing import assert_allclose
 
 from kriging.spatial import downsample_plane, gaussian_psf
-from tools.prepare_degraded_dataset import DegradationProcessor, DegradedPair, DegradedPairDataset
+from tools.prepare_degraded_dataset import (
+    DegradationProcessor,
+    DegradedPair,
+    DegradedPairDataset,
+    main,
+)
 
 
 def write_tiff(path: Path, value: float) -> None:
@@ -183,3 +189,31 @@ def test_processor_rejects_incompatible_shapes_before_writing(
         DegradationProcessor(scale=2).process_pair(pair, output_root)
 
     assert not output_root.exists()
+
+
+def test_cli_processes_all_pairs_and_records_source_dates(tmp_path: Path) -> None:
+    input_root = tmp_path / "input"
+    for serial, gf6_date, landsat_date in (
+        ("01", "20230418", "20190418"),
+        ("02", "20230520", "20190521"),
+    ):
+        write_geotiff(
+            input_root / "gf6" / f"{serial}_{gf6_date}.tif",
+            np.zeros((8, 8, 1), dtype=np.float32),
+            transform=Affine.translation(100, 200) @ Affine.scale(3, -3),
+        )
+        write_geotiff(
+            input_root / "landsat" / f"{serial}_{landsat_date}.tif",
+            np.zeros((4, 4, 1), dtype=np.float32),
+            transform=Affine.translation(-20, 40) @ Affine.scale(30, -30),
+        )
+
+    output_root = tmp_path / "out"
+    assert main(["--input-root", str(input_root), "--output-root", str(output_root), "--scale", "2"]) == 0
+
+    manifest = json.loads((output_root / "manifest.json").read_text())
+    assert manifest["scale"] == 2
+    assert [entry["serial"] for entry in manifest["pairs"]] == ["01", "02"]
+    assert manifest["pairs"][0]["gf6_source"].endswith("01_20230418.tif")
+    assert manifest["pairs"][0]["landsat_source"].endswith("01_20190418.tif")
+    assert Path(manifest["pairs"][1]["fine"]).is_file()
