@@ -50,7 +50,9 @@ class KrigingExperiment:
         results: dict[str, MethodResult] = {}
         if "dsck" in self.config.methods:
             started = perf_counter()
-            prediction = DSCKInterpolator(self.config.dsck, self.config.search).sharpen(
+            prediction = DSCKInterpolator(
+                self.config.dsck, self.config.search, self.config.backend.mode,
+            ).sharpen(
                 coarse, fine, bands, self._print_progress
             )
             results["dsck"] = MethodResult(
@@ -61,7 +63,9 @@ class KrigingExperiment:
 
         if "atprk" in self.config.methods:
             started = perf_counter()
-            output = ATPRKInterpolator(self.config.atprk, self.config.search).sharpen(
+            output = ATPRKInterpolator(
+                self.config.atprk, self.config.search, self.config.backend.mode,
+            ).sharpen(
                 coarse, fine, bands, self._print_progress
             )
             spatial_scale = fine.shape[0] / coarse.shape[0]

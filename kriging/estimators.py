@@ -8,6 +8,7 @@ from typing import Callable
 import numpy as np
 
 from . import atprk, dsck
+from . import gpu
 from .spatial import gaussian_psf
 from .config import ATPRKConfig, DSCKConfig, SearchConfig
 
@@ -31,12 +32,23 @@ def _validate_cubes(coarse: np.ndarray, fine: np.ndarray, band_count: int | None
     return selected_bands
 
 
+def _resolve_backend(backend: str) -> str:
+    if backend == "auto":
+        return "gpu" if gpu.is_available() else "cpu"
+    if backend == "gpu" and not gpu.is_available():
+        raise RuntimeError("配置要求 GPU 后端，但当前进程无法使用 CUDA。")
+    if backend not in {"cpu", "gpu"}:
+        raise ValueError("backend 只能是 'cpu'、'gpu' 或 'auto'。")
+    return backend
+
+
 class DSCKInterpolator:
     """Dual-support cokriging downscaler configured once and reused per image."""
 
-    def __init__(self, config: DSCKConfig, search: SearchConfig) -> None:
+    def __init__(self, config: DSCKConfig, search: SearchConfig, backend: str = "cpu") -> None:
         self.config = config
         self.search = search
+        self.backend = _resolve_backend(backend)
         self._coarse_psf = gaussian_psf(config.coarse_scale, config.coarse_window, config.psf_sigma)
         self._fine_psf = gaussian_psf(config.fine_scale, config.fine_window, config.psf_sigma)
 
@@ -50,6 +62,7 @@ class DSCKInterpolator:
             cfg.coarse_window, cfg.fine_window,
             self._coarse_psf, self._fine_psf,
             cfg.coarse_scale, cfg.fine_scale,
+            backend=self.backend,
         )
 
     def sharpen(
@@ -77,9 +90,10 @@ class DSCKInterpolator:
 class ATPRKInterpolator:
     """Area-to-point regression kriging downscaler."""
 
-    def __init__(self, config: ATPRKConfig, search: SearchConfig) -> None:
+    def __init__(self, config: ATPRKConfig, search: SearchConfig, backend: str = "cpu") -> None:
         self.config = config
         self.search = search
+        self.backend = _resolve_backend(backend)
         self._psf_by_scale: dict[int, np.ndarray] = {}
 
     def _psf_for_scale(self, scale: int) -> np.ndarray:
@@ -105,6 +119,7 @@ class ATPRKInterpolator:
             search.sill_steps, search.range_steps,
             search.step_size, search.max_lag,
             self.config.window, psf,
+            backend=self.backend,
         )
 
     def sharpen(

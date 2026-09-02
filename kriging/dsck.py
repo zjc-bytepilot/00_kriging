@@ -285,7 +285,7 @@ def calculate_coordinate(s0, s, W1, W2, Coarse, Fine, yitaX):
 
 def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
                           L_sill, L_range, L_constant, rate, H, W1, PSF1,
-                          s0=COARSE_SCALE, s=FINE_SCALE):
+                          s0=COARSE_SCALE, s=FINE_SCALE, backend="cpu"):
     """拟合并反卷积粗、细及交叉半变异模型。"""
     # 退化为低空间分辨率
     Fine_up = downsample_plane(Fine, s0, W1, PSF1)
@@ -309,14 +309,35 @@ def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
     x1_cross = np.array([0.0, float(cross_emp[-1]), float(np.median(coarse_dists))])
     coarse_fit = self_estimator.fit(Coarse, H, coarse_dists, x0_coarse)
     xa1 = coarse_fit.parameters
-    x_fine_best1 = deconvolution_coarse(H, s0, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
+    if backend == "gpu":
+        from .gpu import (
+            deconvolution_coarse_gpu,
+            deconvolution_cross_gpu,
+            deconvolution_fine_gpu,
+        )
+
+        x_fine_best1 = deconvolution_coarse_gpu(
+            H, s0, s, xa1, Sill_min, Range_min, L_sill, L_range, rate,
+        )
+    else:
+        x_fine_best1 = deconvolution_coarse(H, s0, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
     fine_fit = self_estimator.fit(Fine, H, fine_dists, x0_fine)
     xa2 = fine_fit.parameters
-    x_fine_best2 = deconvolution_fine(H, s, xa2, Sill_min, Range_min, L_sill, L_range, rate)
+    if backend == "gpu":
+        x_fine_best2 = deconvolution_fine_gpu(H, s, xa2, Sill_min, Range_min, L_sill, L_range, rate)
+    else:
+        x_fine_best2 = deconvolution_fine(H, s, xa2, Sill_min, Range_min, L_sill, L_range, rate)
     cross_fit = cross_estimator.fit_cross(Coarse, Fine_up, H, coarse_dists, x1_cross)
     xa3 = cross_fit.parameters
-    x_fine_best3 = deconvolution_cross(H, s0, s, xa3, Constant_min, Sill_min, Range_min, L_sill, L_range, L_constant,
-                                       rate)
+    if backend == "gpu":
+        x_fine_best3 = deconvolution_cross_gpu(
+            H, s0, s, xa3, Constant_min, Sill_min, Range_min,
+            L_sill, L_range, L_constant, rate,
+        )
+    else:
+        x_fine_best3 = deconvolution_cross(
+            H, s0, s, xa3, Constant_min, Sill_min, Range_min, L_sill, L_range, L_constant, rate,
+        )
     return x_fine_best1, x_fine_best2, x_fine_best3
 
 
@@ -344,19 +365,26 @@ def calculate_matrix(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_
 
 def DSCK_Regression_Sharpen(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
                             L_constant, rate, H, W1, W2, PSF1, PSF2,
-                            s0=COARSE_SCALE, s=FINE_SCALE):
+                            s0=COARSE_SCALE, s=FINE_SCALE, backend="cpu"):
+    if backend not in {"cpu", "gpu"}:
+        raise ValueError("DSCK backend 只能是 'cpu' 或 'gpu'。")
     # 扩展 Coarse 和 Fine
     Coarse_extend = extend_plane(Coarse, W1)
     Fine_extend = extend_plane(Fine, W2)
     x_fine_best1, x_fine_best2, x_fine_best3 = _fit_variogram_models(
         Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
-        L_constant, rate, H, W1, PSF1, s0, s
+        L_constant, rate, H, W1, PSF1, s0, s, backend
     )
     # 计算参数
     # matrix_left, matrix_right = calculate_matrix(s0, s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2)
     yita = calculate_parameter(s0, s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2)
     # 计算坐标
-    P_vm = calculate_coordinate(s0, s, W1, W2, Coarse_extend, Fine_extend, yita)
+    if backend == "gpu":
+        from .gpu import dsck_coordinate_gpu
+
+        P_vm = dsck_coordinate_gpu(s0, W1, W2, Coarse_extend, Fine_extend, yita)
+    else:
+        P_vm = calculate_coordinate(s0, s, W1, W2, Coarse_extend, Fine_extend, yita)
     # 返回结果
     Z0 = P_vm[W1 * s0: -W1 * s0, W1 * s0: -W1 * s0]
     return Z0

@@ -101,12 +101,24 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
+class BackendConfig:
+    """Execution backend selection for the numerical kernels."""
+
+    mode: str = "cpu"
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"cpu", "gpu", "auto"}:
+            raise ValueError("backend.mode 只能是 'cpu'、'gpu' 或 'auto'。")
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     data: DataConfig
     search: SearchConfig = field(default_factory=SearchConfig)
     dsck: DSCKConfig = field(default_factory=DSCKConfig)
     atprk: ATPRKConfig = field(default_factory=ATPRKConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    backend: BackendConfig = field(default_factory=BackendConfig)
     mode: str = "degraded"
     methods: tuple[str, ...] = ("dsck", "atprk")
     band_count: int = 4
@@ -132,6 +144,7 @@ class ExperimentConfig:
             dsck=DSCKConfig(**values.get("dsck", {})),
             atprk=ATPRKConfig(**values.get("atprk", {})),
             output=OutputConfig.from_dict(values.get("output", {})),
+            backend=BackendConfig(**values.get("backend", {})),
             mode=mode,
             methods=methods,
             band_count=band_count,

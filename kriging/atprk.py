@@ -98,7 +98,12 @@ def calculate_coordinate(s, W, S, yitaX, RMSE0):
     return P_vm, RMSE
 
 
-def ATPRK_Sharpen(Coarse, PAN, Sill_min, Range_min, L_sill, L_range, rate, H, w, PSF):
+def ATPRK_Sharpen(
+    Coarse, PAN, Sill_min, Range_min, L_sill, L_range, rate, H, w, PSF,
+    backend="cpu",
+):
+    if backend not in {"cpu", "gpu"}:
+        raise ValueError("ATPRK backend 只能是 'cpu' 或 'gpu'。")
 
     a1, b1 = Coarse.shape
     a2, b2 = PAN.shape
@@ -124,9 +129,17 @@ def ATPRK_Sharpen(Coarse, PAN, Sill_min, Range_min, L_sill, L_range, rate, H, w,
         initial=np.asarray(x0, dtype=float),
     )
     xa1 = fit.parameters
-    xp_best = atprk_deconvolution(H, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
+    if backend == "gpu":
+        from .gpu import atprk_coordinate_gpu, atprk_deconvolution_gpu
+
+        xp_best = atprk_deconvolution_gpu(H, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
+    else:
+        xp_best = atprk_deconvolution(H, s, xa1, Sill_min, Range_min, L_sill, L_range, rate)
     yita1, RMSE0 = calculate_parameter(s, W, xp_best, PSF)
-    P_vm, RMSE = calculate_coordinate(s, W, RB_extend, yita1, RMSE0)
+    if backend == "gpu":
+        P_vm, RMSE = atprk_coordinate_gpu(s, W, RB_extend, yita1, RMSE0)
+    else:
+        P_vm, RMSE = calculate_coordinate(s, W, RB_extend, yita1, RMSE0)
     Z_ATPK = P_vm[W * s: -W * s, W * s: -W * s]
     R = RMSE[W * s: -W * s, W * s: -W * s]
     Z = Z_R + Z_ATPK

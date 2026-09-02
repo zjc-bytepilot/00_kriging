@@ -34,6 +34,9 @@ CONFIG = dict(
         window=1,
         psf_sigma=1.0,
     ),
+    backend=dict(
+        mode="gpu",
+    ),
     output=dict(
         directory="tmp/results/degraded",
     ),
