@@ -7,10 +7,10 @@ from typing import Callable
 
 import numpy as np
 
-from . import atprk, dsck
+from . import atprk, c_dsck, dsck
 from . import gpu
 from .spatial import gaussian_psf
-from .config import ATPRKConfig, DSCKConfig, SearchConfig
+from .config import ATPRKConfig, CDSCKConfig, DSCKConfig, SearchConfig
 
 ProgressCallback = Callable[[str, int, int], None]
 
@@ -141,3 +141,62 @@ class ATPRKInterpolator:
             if progress:
                 progress("ATPRK", band + 1, bands)
         return ATPRKResult(prediction=prediction, uncertainty=uncertainty)
+
+
+class CDSCKInterpolator:
+    """云感知 DSCK 锐化器,固定 interpolate 模式,需云掩膜。"""
+
+    def __init__(self, config: CDSCKConfig, search: SearchConfig, backend: str = "gpu") -> None:
+        self.config = config
+        self.search = search
+        self.backend = _resolve_backend(backend)
+        self._coarse_psf = gaussian_psf(config.coarse_scale, config.coarse_window, config.psf_sigma)
+        self._fine_psf = gaussian_psf(config.fine_scale, config.fine_window, config.psf_sigma)
+
+    def sharpen_band(
+        self, coarse: np.ndarray, fine: np.ndarray, cloud_mask: np.ndarray
+    ) -> np.ndarray:
+        cfg, search = self.config, self.search
+        return c_dsck.CDSCK_Sharpen(
+            coarse, fine, cloud_mask,
+            search.constant_min, search.sill_min, search.range_min,
+            search.sill_steps, search.range_steps, search.constant_steps,
+            search.step_size, search.max_lag,
+            cfg.coarse_window, cfg.fine_window,
+            self._coarse_psf, self._fine_psf,
+            cfg.coarse_scale, cfg.fine_scale,
+            backend=self.backend,
+            psf_sigma=cfg.psf_sigma,
+            max_points=cfg.max_points,
+            max_radius=cfg.max_radius,
+        )
+
+    def sharpen(
+        self,
+        coarse: np.ndarray,
+        fine: np.ndarray,
+        cloud_mask: np.ndarray,
+        band_count: int | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> np.ndarray:
+        bands = _validate_cubes(coarse, fine, band_count)
+        expected_shape = (coarse.shape[0] * self.config.coarse_scale,
+                          coarse.shape[1] * self.config.coarse_scale)
+        if fine.shape[:2] != expected_shape:
+            raise ValueError(
+                f"CDSCK fine 空间形状应为 {expected_shape}，实际为 {fine.shape[:2]}。"
+            )
+        if cloud_mask.shape[:2] != fine.shape[:2]:
+            raise ValueError(
+                f"cloud_mask 形状 {cloud_mask.shape[:2]} 与 fine {fine.shape[:2]} 不一致。"
+            )
+        # cloud_mask 可能是 3D(HWC,单波段),取第 0 波段成 2D 供逐波段使用。
+        mask_2d = cloud_mask[:, :, 0] if cloud_mask.ndim == 3 else cloud_mask
+        prediction = np.empty((*expected_shape, bands), dtype=np.result_type(coarse, fine))
+        for band in range(bands):
+            prediction[:, :, band] = self.sharpen_band(
+                coarse[:, :, band], fine[:, :, band], mask_2d
+            )
+            if progress:
+                progress("CDSCK", band + 1, bands)
+        return prediction

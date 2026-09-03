@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from numba import cuda
+from numba import cuda, float64
 
 from .spatial import exponential_variogram
 
@@ -507,9 +507,167 @@ def r_uu_ll_gpu(
     return r4.copy_to_host()
 
 
+@cuda.jit
+def _cdsck_coordinate_kernel(
+    prediction, coarse, fine, mask, weights,
+    coarse_scale, coarse_window, fine_window,
+    fine_sill, fine_rng, max_points, max_radius,
+):
+    """Cloud-aware DSCK prediction via per-point ordinary kriging.
+
+    Each thread computes one output pixel. Dynamically expands a square window
+    around the predicted point, collecting non-cloud fine points until
+    ``max_points`` are gathered or ``max_radius`` is reached. Then builds an
+    ordinary-kriging system (with Lagrange multiplier) using the fine variogram
+    model, solves by Gaussian elimination, and weights the non-cloud values.
+    No fallback: every pixel is predicted via local kriging on its collected
+    non-cloud points (even if few).
+    """
+    row, column = cuda.grid(2)
+    if row >= prediction.shape[0] or column >= prediction.shape[1]:
+        return
+    coarse_row = row // coarse_scale
+    coarse_column = column // coarse_scale
+    # Skip border pixels (no full coarse window).
+    if coarse_row < coarse_window or coarse_row >= coarse.shape[0] - coarse_window:
+        return
+    if coarse_column < coarse_window or coarse_column >= coarse.shape[1] - coarse_window:
+        return
+
+    # Predicted point coordinates (fine-scale).
+    px = column + 0.5
+    py = row + 0.5
+
+    # Dynamically expand window, collecting non-cloud points.
+    ptx = cuda.local.array(100, float64)
+    pty = cuda.local.array(100, float64)
+    val = cuda.local.array(100, float64)
+    m = 0
+    radius = 0
+    while m < max_points and radius < max_radius:
+        radius += 1
+        # Iterate the ring at this radius (square window border).
+        for lr in range(-radius, radius + 1):
+            for lc in range(-radius, radius + 1):
+                # Only process the outer ring, not the inner square.
+                if abs(lr) != radius and abs(lc) != radius:
+                    continue
+                r = row + lr
+                c = column + lc
+                if r < 0 or r >= fine.shape[0] or c < 0 or c >= fine.shape[1]:
+                    continue
+                if mask[r, c] == 1:
+                    continue
+                if m >= max_points:
+                    break
+                ptx[m] = c + 0.5
+                pty[m] = r + 0.5
+                val[m] = fine[r, c]
+                m += 1
+            if m >= max_points:
+                break
+
+    if m == 0:
+        # No non-cloud point reachable: predict from coarse center as last resort.
+        prediction[row, column] = coarse[coarse_row, coarse_column]
+        return
+
+    # Build ordinary kriging system: (m+1)x(m+1) matrix A, rhs b.
+    n = m + 1
+    A = cuda.local.array((101, 101), float64)
+    b = cuda.local.array(101, float64)
+    for i in range(n):
+        b[i] = 0.0
+        for j in range(n):
+            A[i, j] = 0.0
+    for i in range(m):
+        for j in range(m):
+            if i == j:
+                A[i, j] = 0.0
+            else:
+                dx = ptx[i] - ptx[j]
+                dy = pty[i] - pty[j]
+                d = math.sqrt(dx * dx + dy * dy)
+                A[i, j] = fine_sill * (1.0 - math.exp(-d / fine_rng))
+        A[i, m] = 1.0
+        A[m, i] = 1.0
+        dx = ptx[i] - px
+        dy = pty[i] - py
+        d = math.sqrt(dx * dx + dy * dy)
+        b[i] = fine_sill * (1.0 - math.exp(-d / fine_rng))
+    A[m, m] = 0.0
+    b[m] = 1.0
+
+    # Solve A·w = b by Gaussian elimination with partial pivoting.
+    for k in range(n):
+        piv = k
+        maxv = abs(A[k, k])
+        for i in range(k + 1, n):
+            if abs(A[i, k]) > maxv:
+                maxv = abs(A[i, k])
+                piv = i
+        if piv != k:
+            for j in range(n):
+                tmp = A[k, j]
+                A[k, j] = A[piv, j]
+                A[piv, j] = tmp
+            tmp = b[k]
+            b[k] = b[piv]
+            b[piv] = tmp
+        if abs(A[k, k]) < 1e-12:
+            # Singular: fall back to simple average of non-cloud points.
+            s = 0.0
+            for i in range(m):
+                s += val[i]
+            prediction[row, column] = s / m
+            return
+        for i in range(k + 1, n):
+            f = A[i, k] / A[k, k]
+            for j in range(k, n):
+                A[i, j] -= f * A[k, j]
+            b[i] -= f * b[k]
+    # Back-substitution.
+    w = cuda.local.array(101, float64)
+    for i in range(n - 1, -1, -1):
+        s = b[i]
+        for j in range(i + 1, n):
+            s -= A[i, j] * w[j]
+        w[i] = s / A[i, i]
+
+    value = 0.0
+    for i in range(m):
+        value += w[i] * val[i]
+    prediction[row, column] = value
+
+
+def cdsck_coordinate_gpu(
+    coarse_scale: int, fine_scale: int, coarse_window: int, fine_window: int,
+    coarse: np.ndarray, fine: np.ndarray, mask: np.ndarray, weights: np.ndarray,
+    fine_params: np.ndarray, cross_params: np.ndarray,
+    max_points: int, max_radius: int,
+) -> np.ndarray:
+    """Cloud-aware DSCK prediction on CUDA (per-point ordinary kriging)."""
+    _require_cuda()
+    coarse_device = cuda.to_device(np.asarray(coarse, dtype=np.float64))
+    fine_device = cuda.to_device(np.asarray(fine, dtype=np.float64))
+    mask_device = cuda.to_device(np.asarray(mask, dtype=np.int8))
+    weights_device = cuda.to_device(np.asarray(weights, dtype=np.float64))
+    shape = (coarse.shape[0] * coarse_scale, coarse.shape[1] * coarse_scale)
+    prediction = cuda.to_device(np.zeros(shape, dtype=np.float64))
+    threads = (16, 16)
+    blocks = ((shape[0] + 15) // 16, (shape[1] + 15) // 16)
+    _cdsck_coordinate_kernel[blocks, threads](
+        prediction, coarse_device, fine_device, mask_device, weights_device,
+        coarse_scale, coarse_window, fine_window,
+        float(fine_params[0]), float(fine_params[1]), max_points, max_radius,
+    )
+    return prediction.copy_to_host()
+
+
 __all__ = [
     "atprk_coordinate_gpu",
     "atprk_deconvolution_gpu",
+    "cdsck_coordinate_gpu",
     "deconvolution_coarse_gpu",
     "deconvolution_cross_gpu",
     "deconvolution_fine_gpu",

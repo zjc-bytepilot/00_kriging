@@ -22,9 +22,11 @@ class DataConfig:
     fine_path: Path
     dates: tuple[str, ...]
     label_path: Path | None = None
+    cloud_mask_path: Path | None = None
     coarse_pattern: str = "C{identifier}.tif"
     fine_pattern: str = "F{identifier}.tif"
     label_pattern: str = "L{identifier}.tif"
+    cloud_mask_pattern: str = "M{identifier}.tif"
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> "DataConfig":
@@ -35,10 +37,12 @@ class DataConfig:
             coarse_path=_resolve_project_path(values["coarse_path"]),
             fine_path=_resolve_project_path(values["fine_path"]),
             label_path=_resolve_project_path(values["label_path"]) if values.get("label_path") else None,
+            cloud_mask_path=_resolve_project_path(values["cloud_mask_path"]) if values.get("cloud_mask_path") else None,
             dates=dates,
             coarse_pattern=values.get("coarse_pattern", "C{identifier}.tif"),
             fine_pattern=values.get("fine_pattern", "F{identifier}.tif"),
             label_pattern=values.get("label_pattern", "L{identifier}.tif"),
+            cloud_mask_pattern=values.get("cloud_mask_pattern", "M{identifier}.tif"),
         )
 
 
@@ -89,6 +93,34 @@ class ATPRKConfig:
 
 
 @dataclass(frozen=True)
+class CDSCKConfig:
+    """云感知 DSCK 配置。
+
+    固定走 interpolate 模式(ATPK 把 coarse 插值到 fine 尺度,在 fine 尺度
+    算交叉半方差)。预测时逐点动态扩张窗口收集非云点:从半径 1 开始逐圈
+    扩张,直到收集到 ``max_points`` 个非云点或达到 ``max_radius``。
+    """
+
+    coarse_scale: int = 3
+    fine_scale: int = 2
+    coarse_window: int = 1
+    fine_window: int = 3
+    psf_sigma: float = 1.0
+    max_points: int = 100
+    max_radius: int = 50
+
+    def __post_init__(self) -> None:
+        if min(self.coarse_scale, self.fine_scale, self.coarse_window, self.fine_window) <= 0:
+            raise ValueError("CDSCK 的尺度和窗口参数必须为正整数。")
+        if self.psf_sigma <= 0:
+            raise ValueError("psf_sigma 必须大于 0。")
+        if self.max_points <= 0:
+            raise ValueError("max_points 必须大于 0。")
+        if self.max_radius <= 0:
+            raise ValueError("max_radius 必须大于 0。")
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     directory: Path = Path("tmp/results")
     save_prediction: bool = True
@@ -120,6 +152,7 @@ class ExperimentConfig:
     search: SearchConfig = field(default_factory=SearchConfig)
     dsck: DSCKConfig = field(default_factory=DSCKConfig)
     atprk: ATPRKConfig = field(default_factory=ATPRKConfig)
+    cdsck: CDSCKConfig = field(default_factory=CDSCKConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     backend: BackendConfig = field(default_factory=BackendConfig)
     mode: str = "degraded"
@@ -129,7 +162,7 @@ class ExperimentConfig:
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> "ExperimentConfig":
         methods = tuple(method.lower() for method in values.get("methods", ("dsck", "atprk")))
-        unsupported = set(methods) - {"dsck", "atprk"}
+        unsupported = set(methods) - {"dsck", "atprk", "c_dsck"}
         if unsupported:
             raise ValueError(f"不支持的算法: {sorted(unsupported)}")
         band_count = int(values.get("band_count", 4))
@@ -141,11 +174,14 @@ class ExperimentConfig:
         data = DataConfig.from_dict(values["data"])
         if mode == "degraded" and data.label_path is None:
             raise ValueError("degraded 模式必须配置 data.label_path。")
+        if "c_dsck" in methods and data.cloud_mask_path is None:
+            raise ValueError("c_dsck 方法必须配置 data.cloud_mask_path。")
         return cls(
             data=data,
             search=SearchConfig(**values.get("search", {})),
             dsck=DSCKConfig(**values.get("dsck", {})),
             atprk=ATPRKConfig(**values.get("atprk", {})),
+            cdsck=CDSCKConfig(**values.get("cdsck", {})),
             output=OutputConfig.from_dict(values.get("output", {})),
             backend=BackendConfig(**values.get("backend", {})),
             mode=mode,

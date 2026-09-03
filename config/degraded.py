@@ -6,12 +6,14 @@ CONFIG = dict(
         coarse_path="data/lan_gf_degraded/coarse",
         fine_path="data/lan_gf_degraded/fine",
         label_path="data/lan_gf_degraded/label",
+        cloud_mask_path="data/lan_gf_degraded/mask",
         dates=["01"],
         coarse_pattern="C{identifier}.tif",
         fine_pattern="F{identifier}.tif",
         label_pattern="L{identifier}.tif",
+        cloud_mask_pattern="M{identifier}.tif",
     ),
-    methods=["dsck", "atprk"],
+    methods=["dsck", "atprk", "c_dsck"],
     band_count=4,
     search=dict(
         constant_min=0.5,
@@ -33,6 +35,15 @@ CONFIG = dict(
     atprk=dict(
         window=1,
         psf_sigma=1.0,
+    ),
+    cdsck=dict(
+        coarse_scale=3,
+        fine_scale=2,
+        coarse_window=1,
+        fine_window=3,
+        psf_sigma=1.0,
+        max_points=100,
+        max_radius=50,
     ),
     backend=dict(
         mode="gpu",

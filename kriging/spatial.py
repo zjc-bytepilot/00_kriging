@@ -195,3 +195,98 @@ def cross_semivariogram(first, second, lag):
 
 
 semivariogram_cross = cross_semivariogram
+
+
+@jit(nopython=True)
+def masked_semivariogram(plane, mask, lag):
+    """带云掩膜的经验半方差。
+
+    ``mask`` 与 ``plane`` 同形状,1 表示云(跳过),0 表示有效。
+    统计时跳过任一端为云的像元对,只对两端都有效的像元对累加。
+    若无有效像元对,返回 0。
+    """
+    rows, columns = plane.shape
+    total = 0.0
+    count = 0
+    # vertical backward: (row, col) vs (row-lag, col)
+    for row in range(lag, rows):
+        for column in range(columns):
+            if mask[row, column] == 1 or mask[row - lag, column] == 1:
+                continue
+            total += (plane[row, column] - plane[row - lag, column]) ** 2
+            count += 1
+    # vertical forward: (row, col) vs (row+lag, col)
+    for row in range(rows - lag):
+        for column in range(columns):
+            if mask[row, column] == 1 or mask[row + lag, column] == 1:
+                continue
+            total += (plane[row, column] - plane[row + lag, column]) ** 2
+            count += 1
+    # horizontal backward: (row, col) vs (row, col-lag)
+    for row in range(rows):
+        for column in range(lag, columns):
+            if mask[row, column] == 1 or mask[row, column - lag] == 1:
+                continue
+            total += (plane[row, column] - plane[row, column - lag]) ** 2
+            count += 1
+    # horizontal forward: (row, col) vs (row, col+lag)
+    for row in range(rows):
+        for column in range(columns - lag):
+            if mask[row, column] == 1 or mask[row, column + lag] == 1:
+                continue
+            total += (plane[row, column] - plane[row, column + lag]) ** 2
+            count += 1
+    if count == 0:
+        return 0.0
+    return total / (2 * count)
+
+
+@jit(nopython=True)
+def masked_cross_semivariogram(first, second, mask, lag):
+    """带云掩膜的交叉半方差。
+
+    ``mask`` 与 ``first``/``second`` 同形状,1 表示云。
+    跳过任一端为云的像元对。若无有效像元对,返回 0。
+    """
+    rows, columns = first.shape
+    total = 0.0
+    count = 0
+    for row in range(lag, rows):
+        for column in range(columns):
+            if mask[row, column] == 1 or mask[row - lag, column] == 1:
+                continue
+            total += (
+                (first[row, column] - first[row - lag, column])
+                * (second[row, column] - second[row - lag, column])
+            )
+            count += 1
+    for row in range(rows - lag):
+        for column in range(columns):
+            if mask[row, column] == 1 or mask[row + lag, column] == 1:
+                continue
+            total += (
+                (first[row, column] - first[row + lag, column])
+                * (second[row, column] - second[row + lag, column])
+            )
+            count += 1
+    for row in range(rows):
+        for column in range(lag, columns):
+            if mask[row, column] == 1 or mask[row, column - lag] == 1:
+                continue
+            total += (
+                (first[row, column] - first[row, column - lag])
+                * (second[row, column] - second[row, column - lag])
+            )
+            count += 1
+    for row in range(rows):
+        for column in range(columns - lag):
+            if mask[row, column] == 1 or mask[row, column + lag] == 1:
+                continue
+            total += (
+                (first[row, column] - first[row, column + lag])
+                * (second[row, column] - second[row, column + lag])
+            )
+            count += 1
+    if count == 0:
+        return 0.0
+    return total / (2 * count)
