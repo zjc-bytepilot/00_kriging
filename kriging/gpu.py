@@ -392,6 +392,121 @@ def dsck_coordinate_gpu(
     return prediction.copy_to_host()
 
 
+@cuda.jit
+def _t_coarse_coarse_kernel(tvv, window, scale, sill, rng, psf):
+    """Compute one element of the ATPK coarse-coarse coefficient matrix TVV.
+
+    Mirrors ``kriging.atprk.T_coarse_coarse2``: each thread computes TVV[i,j]
+    by double PSF-weighted aggregation over sub-pixels of coarse cells i and j.
+    ``sill``/``rng`` are the two variogram parameters (exponential model).
+    """
+    idx = cuda.grid(1)
+    n = (2 * window + 1) ** 2
+    if idx >= n * n:
+        return
+    i = idx // n
+    j = idx % n
+    side = (2 * window + 1) * scale
+    # coarse cell index (M1, N1) within the (2W+1)x(2W+1) window.
+    mi = i // (2 * window + 1) - window
+    ni = i % (2 * window + 1) - window
+    mj = j // (2 * window + 1) - window
+    nj = j % (2 * window + 1) - window
+
+    tvv_ij = 0.0
+    # Outer aggregation: sub-pixel (ii,jj) of coarse cell j.
+    for ii in range(side):
+        for jj in range(side):
+            inner = 0.0  # inner Tvv block
+            for iii in range(side):
+                for jjj in range(side):
+                    p1x = mi * scale + iii + 0.5
+                    p1y = ni * scale + jjj + 0.5
+                    p2x = mj * scale + ii + 0.5
+                    p2y = nj * scale + jj + 0.5
+                    dx = p1x - p2x
+                    dy = p1y - p2y
+                    dist = math.sqrt(dx * dx + dy * dy)
+                    inner += sill * (1.0 - math.exp(-dist / rng)) * psf[iii, jjj]
+            tvv_ij += inner * psf[ii, jj]
+    tvv[i, j] = tvv_ij
+
+
+def t_coarse_coarse_gpu(
+    window: int, scale: int, parameters: np.ndarray, psf: np.ndarray,
+) -> np.ndarray:
+    """GPU equivalent of ``kriging.atprk.T_coarse_coarse2``."""
+    _require_cuda()
+    n = (2 * window + 1) ** 2
+    tvv = cuda.device_array((n, n), dtype=np.float64)
+    psf_device = cuda.to_device(np.asarray(psf, dtype=np.float64))
+    sill = float(parameters[0])
+    rng = float(parameters[1])
+    threads = 128
+    blocks = (n * n + threads - 1) // threads
+    _t_coarse_coarse_kernel[blocks, threads](
+        tvv, window, scale, sill, rng, psf_device,
+    )
+    return tvv.copy_to_host()
+
+
+@cuda.jit
+def _r_uu_ll_kernel(r4, window, scale, sill, rng, psf):
+    """Compute one element of the DSCK fine-fine coefficient matrix r_UU_ll.
+
+    Mirrors ``kriging.dsck.r_UU_ll``: each thread computes r4[i,j] by double
+    PSF-weighted aggregation. ``sill``/``rng`` are the exponential variogram
+    parameters.
+    """
+    idx = cuda.grid(1)
+    n = (2 * window + 1) ** 2
+    if idx >= n * n:
+        return
+    i = idx // n
+    j = idx % n
+    side = (2 * window + 1) * scale
+    mi = i // (2 * window + 1) - window
+    ni = i % (2 * window + 1) - window
+    mj = j // (2 * window + 1) - window
+    nj = j % (2 * window + 1) - window
+
+    r4_ij = 0.0
+    # p1 用粗像元 i + 子像素 (ii,jj);p2 用粗像元 j + 子像素 (iii,jjj)
+    for ii in range(side):
+        for jj in range(side):
+            inner = 0.0
+            for iii in range(side):
+                for jjj in range(side):
+                    p1x = mi * scale + ii + 0.5
+                    p1y = ni * scale + jj + 0.5
+                    p2x = mj * scale + iii + 0.5
+                    p2y = nj * scale + jjj + 0.5
+                    dx = p1x - p2x
+                    dy = p1y - p2y
+                    dist = math.sqrt(dx * dx + dy * dy)
+                    inner += sill * (1.0 - math.exp(-dist / rng)) * psf[iii, jjj]
+            r4_ij += inner * psf[ii, jj]
+    r4[i, j] = r4_ij
+
+
+def r_uu_ll_gpu(
+    window: int, scale: int, parameters: np.ndarray, psf: np.ndarray,
+) -> np.ndarray:
+    """GPU equivalent of ``kriging.dsck.r_UU_ll``."""
+    _require_cuda()
+    n = (2 * window + 1) ** 2
+    r4 = cuda.device_array((n, n), dtype=np.float64)
+    psf_device = cuda.to_device(np.asarray(psf, dtype=np.float64))
+    sill = float(parameters[0])
+    rng = float(parameters[1])
+    threads = 128
+    blocks = (n * n + threads - 1) // threads
+    _r_uu_ll_kernel[blocks, threads](
+        r4, window, scale, sill, rng, psf_device,
+    )
+    return r4.copy_to_host()
+
+
 __all__ = [
     "atprk_coordinate_gpu",
     "atprk_deconvolution_gpu",
@@ -400,4 +515,6 @@ __all__ = [
     "deconvolution_fine_gpu",
     "dsck_coordinate_gpu",
     "is_available",
+    "r_uu_ll_gpu",
+    "t_coarse_coarse_gpu",
 ]

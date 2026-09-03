@@ -67,12 +67,15 @@ class DSCKConfig:
     coarse_window: int = 1
     fine_window: int = 3
     psf_sigma: float = 1.0
+    cross_mode: str = "degrade"
 
     def __post_init__(self) -> None:
         if min(self.coarse_scale, self.fine_scale, self.coarse_window, self.fine_window) <= 0:
             raise ValueError("DSCK 的尺度和窗口参数必须为正整数。")
         if self.psf_sigma <= 0:
             raise ValueError("psf_sigma 必须大于 0。")
+        if self.cross_mode not in {"degrade", "interpolate"}:
+            raise ValueError("cross_mode 只能是 'degrade' 或 'interpolate'。")
 
 
 @dataclass(frozen=True)

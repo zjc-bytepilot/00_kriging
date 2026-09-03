@@ -238,11 +238,16 @@ def _build_kriging_system(coarse_variogram, cross_variogram, fine_variogram):
     return DSCKSystemBuilder.build(coarse_variogram, cross_variogram, fine_variogram)
 
 
-def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2):
+def calculate_parameter(s0, s, W1, W2, xX1, xX2, xX3, PSF1, PSF2, backend="cpu"):
 
     r1 = r_VV_kk(W1, s0, s, xX1, PSF1)  # 求点扩散函数取的s,PSF1=6
     r2 = r_VU_kl(W1, W2, s0, s, xX3, PSF1, PSF2)  # PSF2为24
-    r4 = r_UU_ll(W2, s, xX2, PSF2)
+    if backend == "gpu":
+        from .gpu import r_uu_ll_gpu
+
+        r4 = r_uu_ll_gpu(W2, s, xX2, PSF2)
+    else:
+        r4 = r_UU_ll(W2, s, xX2, PSF2)
     system = _build_kriging_system(r1, r2, r4)
     coefficient_count = (2 * W1 + 1) ** 2 + (2 * W2 + 1) ** 2 + 2
     yita = np.zeros((s0, s0, coefficient_count))  # 用来存储结果
@@ -285,10 +290,17 @@ def calculate_coordinate(s0, s, W1, W2, Coarse, Fine, yitaX):
 
 def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
                           L_sill, L_range, L_constant, rate, H, W1, PSF1,
-                          s0=COARSE_SCALE, s=FINE_SCALE, backend="cpu"):
-    """拟合并反卷积粗、细及交叉半变异模型。"""
-    # 退化为低空间分辨率
-    Fine_up = downsample_plane(Fine, s0, W1, PSF1)
+                          s0=COARSE_SCALE, s=FINE_SCALE, backend="cpu",
+                          cross_mode="degrade", W2=None, PSF2=None,
+                          psf_sigma=1.0):
+    """拟合并反卷积粗、细及交叉半变异模型。
+
+    ``cross_mode`` 决定交叉半方差的配对策略:
+      - ``"degrade"``(默认,历史行为):把 Fine 退化到 coarse 尺度,
+        在 coarse 尺度下计算交叉半方差。
+      - ``"interpolate"``:用纯 ATPK 把 Coarse 插值到 fine 尺度,
+        在 fine 尺度下计算交叉半方差。此模式需要 ``W2`` 与 ``PSF2``。
+    """
     self_estimator = VariogramEstimator(
         empirical_kernel=semivariogram,
         residual_kernel=myfun_fit,
@@ -303,10 +315,31 @@ def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
     fine_dists = np.arange(s, s * H + 1, s)
     coarse_emp = self_estimator.empirical(Coarse, H)
     fine_emp = self_estimator.empirical(Fine, H)
-    cross_emp = cross_estimator.empirical_cross(Coarse, Fine_up, H)
     x0_coarse = np.array([float(coarse_emp[-1]), float(np.median(coarse_dists))])
     x0_fine = np.array([float(fine_emp[-1]), float(np.median(fine_dists))])
-    x1_cross = np.array([0.0, float(cross_emp[-1]), float(np.median(coarse_dists))])
+
+    # 交叉半方差配对:degrade 退化 fine,interpolate 插值 coarse。
+    if cross_mode == "interpolate":
+        if W2 is None or PSF2 is None:
+            raise ValueError("interpolate 模式需要 W2 与 PSF2。")
+        from .atpk import ATPK_Interpolate
+        from .spatial import gaussian_psf
+
+        atpk_psf = gaussian_psf(s0, W2, psf_sigma)
+        Coarse_up = ATPK_Interpolate(
+            Coarse, Sill_min, Range_min, L_sill, L_range, rate, H,
+            W2, atpk_psf, s=s0, backend=backend,
+        )
+        cross_first, cross_second = Coarse_up, Fine
+        cross_dists = fine_dists
+    else:
+        Fine_up = downsample_plane(Fine, s0, W1, PSF1)
+        cross_first, cross_second = Coarse, Fine_up
+        cross_dists = coarse_dists
+
+    cross_emp = cross_estimator.empirical_cross(cross_first, cross_second, H)
+    cross_sill0 = max(float(cross_emp[-1]), 1e-6)
+    x1_cross = np.array([0.0, cross_sill0, float(np.median(cross_dists))])
     coarse_fit = self_estimator.fit(Coarse, H, coarse_dists, x0_coarse)
     xa1 = coarse_fit.parameters
     if backend == "gpu":
@@ -327,16 +360,17 @@ def _fit_variogram_models(Coarse, Fine, Constant_min, Sill_min, Range_min,
         x_fine_best2 = deconvolution_fine_gpu(H, s, xa2, Sill_min, Range_min, L_sill, L_range, rate)
     else:
         x_fine_best2 = deconvolution_fine(H, s, xa2, Sill_min, Range_min, L_sill, L_range, rate)
-    cross_fit = cross_estimator.fit_cross(Coarse, Fine_up, H, coarse_dists, x1_cross)
+    cross_fit = cross_estimator.fit_cross(cross_first, cross_second, H, cross_dists, x1_cross)
     xa3 = cross_fit.parameters
+    cross_coarse_scale = 1 if cross_mode == "interpolate" else s0
     if backend == "gpu":
         x_fine_best3 = deconvolution_cross_gpu(
-            H, s0, s, xa3, Constant_min, Sill_min, Range_min,
+            H, cross_coarse_scale, s, xa3, Constant_min, Sill_min, Range_min,
             L_sill, L_range, L_constant, rate,
         )
     else:
         x_fine_best3 = deconvolution_cross(
-            H, s0, s, xa3, Constant_min, Sill_min, Range_min, L_sill, L_range, L_constant, rate,
+            H, cross_coarse_scale, s, xa3, Constant_min, Sill_min, Range_min, L_sill, L_range, L_constant, rate,
         )
     return x_fine_best1, x_fine_best2, x_fine_best3
 
@@ -365,7 +399,8 @@ def calculate_matrix(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_
 
 def DSCK_Regression_Sharpen(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
                             L_constant, rate, H, W1, W2, PSF1, PSF2,
-                            s0=COARSE_SCALE, s=FINE_SCALE, backend="cpu"):
+                            s0=COARSE_SCALE, s=FINE_SCALE, backend="cpu",
+                            cross_mode="degrade", psf_sigma=1.0):
     if backend not in {"cpu", "gpu"}:
         raise ValueError("DSCK backend 只能是 'cpu' 或 'gpu'。")
     # 扩展 Coarse 和 Fine
@@ -373,11 +408,12 @@ def DSCK_Regression_Sharpen(Coarse, Fine, Constant_min, Sill_min, Range_min, L_s
     Fine_extend = extend_plane(Fine, W2)
     x_fine_best1, x_fine_best2, x_fine_best3 = _fit_variogram_models(
         Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
-        L_constant, rate, H, W1, PSF1, s0, s, backend
+        L_constant, rate, H, W1, PSF1, s0, s, backend,
+        cross_mode=cross_mode, W2=W2, PSF2=PSF2, psf_sigma=psf_sigma,
     )
     # 计算参数
     # matrix_left, matrix_right = calculate_matrix(s0, s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2)
-    yita = calculate_parameter(s0, s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2)
+    yita = calculate_parameter(s0, s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2, backend=backend)
     # 计算坐标
     if backend == "gpu":
         from .gpu import dsck_coordinate_gpu

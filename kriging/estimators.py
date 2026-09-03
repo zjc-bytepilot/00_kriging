@@ -63,6 +63,8 @@ class DSCKInterpolator:
             self._coarse_psf, self._fine_psf,
             cfg.coarse_scale, cfg.fine_scale,
             backend=self.backend,
+            cross_mode=cfg.cross_mode,
+            psf_sigma=cfg.psf_sigma,
         )
 
     def sharpen(
