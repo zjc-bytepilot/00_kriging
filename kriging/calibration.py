@@ -52,8 +52,8 @@ REGISTRY: dict[Sensor, ScaleOffset] = {
     Sensor.LANDSAT_C2_L2: ScaleOffset(2.75e-5, -0.2),
     # GF6 SR 产品惯例：反射率 = DN * 1e-4（数据文件未写系数，由数值范围反推）
     Sensor.GF6_SR: ScaleOffset(1e-4, 0.0),
-    # Sentinel-2 L2A SR：反射率 = DN * 1e-4（占位，待真数据确认后调整）
-    Sensor.SENTINEL2_L2A: ScaleOffset(1e-4, 0.0),
+    # 当前 SAFE 元数据为 BOA_ADD_OFFSET=-1000、BOA_QUANTIFICATION_VALUE=10000。
+    Sensor.SENTINEL2_L2A: ScaleOffset(1e-4, -0.1),
 }
 
 #: 输入目录名到传感器的推断映射。CLI 按子目录名查此表。

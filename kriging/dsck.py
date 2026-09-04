@@ -98,8 +98,8 @@ def r_VV_kk(W, s0, s, xX, PSF):
                     # 遍历当前粗像素的子像素
                     for iii in range((2 * W + 1) * s0):
                         for jjj in range((2 * W + 1) * s0):
-                            p1 = np.array([(M1[i] - W) * s * s0 + s * (ii + 1) - 1, (N1[i] - W) * s * s0 + s * (jj + 1) - 1])
-                            p2 = np.array([(M1[j] - W) * s * s0 + s * (iii + 1) - 1, (N1[j]- W) * s * s0 + s * (jjj + 1) - 1])
+                            p1 = np.array([(M1[i] - W) * s0 + ii + 0.5, (N1[i] - W) * s0 + jj + 0.5])
+                            p2 = np.array([(M1[j] - W) * s0 + iii + 0.5, (N1[j]- W) * s0 + jjj+ 0.5])
                             r_vv_kk[iii, jjj] = myfun(xX, np.sqrt(np.sum((p1 - p2) ** 2)))
                     # 计算 r_vV_kk
                     r_vV_kk[ii, jj] = np.sum(r_vv_kk * PSF)
@@ -400,7 +400,15 @@ def calculate_matrix(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_
 def DSCK_Regression_Sharpen(Coarse, Fine, Constant_min, Sill_min, Range_min, L_sill, L_range,
                             L_constant, rate, H, W1, W2, PSF1, PSF2,
                             s0=COARSE_SCALE, s=FINE_SCALE, backend="cpu",
-                            cross_mode="degrade", psf_sigma=1.0):
+                            cross_mode="degrade", psf_sigma=1.0,
+                            matrix_s0=None, matrix_s=None):
+    """DSCK 锐化。
+
+    ``s0``/``s`` 用于经验阶段(插值/退化/经验变异函数/反卷积);
+    ``matrix_s0``/``matrix_s`` 用于克里金矩阵阶段(r_* 支撑矩阵与 RHS),
+    为 None 时回退到 ``s0``/``s``。``matrix_s0`` 必须等于 ``s0``
+    (输出网格约束),``matrix_s`` 可独立设置。
+    """
     if backend not in {"cpu", "gpu"}:
         raise ValueError("DSCK backend 只能是 'cpu' 或 'gpu'。")
     # 扩展 Coarse 和 Fine
@@ -413,7 +421,7 @@ def DSCK_Regression_Sharpen(Coarse, Fine, Constant_min, Sill_min, Range_min, L_s
     )
     # 计算参数
     # matrix_left, matrix_right = calculate_matrix(s0, s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2)
-    yita = calculate_parameter(s0, s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2, backend=backend)
+    yita = calculate_parameter(matrix_s0, matrix_s, W1, W2, x_fine_best1, x_fine_best2, x_fine_best3, PSF1, PSF2, backend=backend)
     # 计算坐标
     if backend == "gpu":
         from .gpu import dsck_coordinate_gpu

@@ -7,10 +7,10 @@ from typing import Callable
 
 import numpy as np
 
-from . import atprk, c_dsck, dsck
+from . import atpk, atprk, c_dsck, dsck
 from . import gpu
 from .spatial import gaussian_psf
-from .config import ATPRKConfig, CDSCKConfig, DSCKConfig, SearchConfig
+from .config import ATPKConfig, ATPRKConfig, CDSCKConfig, DSCKConfig, SearchConfig
 
 ProgressCallback = Callable[[str, int, int], None]
 
@@ -65,6 +65,8 @@ class DSCKInterpolator:
             backend=self.backend,
             cross_mode=cfg.cross_mode,
             psf_sigma=cfg.psf_sigma,
+            matrix_s0=cfg.matrix_coarse_scale,
+            matrix_s=cfg.matrix_fine_scale,
         )
 
     def sharpen(
@@ -143,6 +145,63 @@ class ATPRKInterpolator:
         return ATPRKResult(prediction=prediction, uncertainty=uncertainty)
 
 
+class ATPKInterpolator:
+    """Area-to-point kriging downscaler without the regression term."""
+
+    def __init__(self, config: ATPKConfig, search: SearchConfig, backend: str = "cpu") -> None:
+        self.config = config
+        self.search = search
+        self.backend = _resolve_backend(backend)
+        self._psf_by_scale: dict[int, np.ndarray] = {}
+
+    def _psf_for_scale(self, scale: int) -> np.ndarray:
+        return self._psf_by_scale.setdefault(
+            scale,
+            gaussian_psf(scale, self.config.window, self.config.psf_sigma),
+        )
+
+    def sharpen_band(self, coarse: np.ndarray, fine: np.ndarray) -> np.ndarray:
+        if coarse.ndim != 2 or fine.ndim != 2:
+            raise ValueError("单波段 coarse 和 fine 必须是二维数组。")
+        if fine.shape[0] % coarse.shape[0] or fine.shape[1] % coarse.shape[1]:
+            raise ValueError("fine 的空间尺寸必须是 coarse 的整数倍。")
+        row_scale = fine.shape[0] // coarse.shape[0]
+        column_scale = fine.shape[1] // coarse.shape[1]
+        if row_scale != column_scale:
+            raise ValueError("ATPK 仅支持行列缩放比例相同的数据。")
+        search = self.search
+        return atpk.ATPK_Interpolate(
+            coarse,
+            search.sill_min,
+            search.range_min,
+            search.sill_steps,
+            search.range_steps,
+            search.step_size,
+            search.max_lag,
+            self.config.window,
+            self._psf_for_scale(row_scale),
+            s=row_scale,
+            backend=self.backend,
+        )
+
+    def sharpen(
+        self,
+        coarse: np.ndarray,
+        fine: np.ndarray,
+        band_count: int | None = None,
+        progress: ProgressCallback | None = None,
+    ) -> np.ndarray:
+        bands = _validate_cubes(coarse, fine, band_count)
+        prediction = np.empty((*fine.shape[:2], bands), dtype=np.result_type(coarse, fine))
+        for band in range(bands):
+            prediction[:, :, band] = self.sharpen_band(
+                coarse[:, :, band], fine[:, :, band]
+            )
+            if progress:
+                progress("ATPK", band + 1, bands)
+        return prediction
+
+
 class CDSCKInterpolator:
     """云感知 DSCK 锐化器,固定 interpolate 模式,需云掩膜。"""
 
@@ -167,8 +226,12 @@ class CDSCKInterpolator:
             cfg.coarse_scale, cfg.fine_scale,
             backend=self.backend,
             psf_sigma=cfg.psf_sigma,
+            cross_mode=cfg.cross_mode,
+            matrix_s0=cfg.matrix_coarse_scale,
+            matrix_s=cfg.matrix_fine_scale,
             max_points=cfg.max_points,
             max_radius=cfg.max_radius,
+            batch_size=cfg.batch_size,
         )
 
     def sharpen(

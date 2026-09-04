@@ -3,17 +3,23 @@
 CONFIG = dict(
     mode="degraded",
     data=dict(
-        coarse_path="data/lan_gf_degraded/coarse",
-        fine_path="data/lan_gf_degraded/fine",
-        label_path="data/lan_gf_degraded/label",
-        cloud_mask_path="data/lan_gf_degraded/mask",
-        dates=["01"],
+        coarse_path="data/c_dsck/landsat_sentinel2/lan_sen_degraded/coarse",
+        fine_path="data/c_dsck/landsat_sentinel2/lan_sen_degraded/fine",
+        label_path="data/c_dsck/landsat_sentinel2/lan_sen_degraded/label",
+        dates=["230705"],
+        cloud_masks=[
+                    dict(
+                        name="cloud_09",
+                        path="data/c_dsck/landsat_sentinel2/lan_sen_degraded/mask_09",
+                        pattern="M{identifier}.tif",
+                    ),
+                ],
         coarse_pattern="C{identifier}.tif",
         fine_pattern="F{identifier}.tif",
         label_pattern="L{identifier}.tif",
         cloud_mask_pattern="M{identifier}.tif",
     ),
-    methods=["dsck", "atprk", "c_dsck"],
+    methods=["dsck", "atpk", "atprk", "c_dsck"],
     band_count=4,
     search=dict(
         constant_min=0.5,
@@ -26,10 +32,18 @@ CONFIG = dict(
         max_lag=30,
     ),
     dsck=dict(
+        # coarse_scale = coarse→fine 倍数, fine_scale = fine→点尺度倍数
         coarse_scale=3,
         fine_scale=2,
         coarse_window=1,
         fine_window=3,
+        cross_mode="degrade",
+        psf_sigma=1.0,
+        matrix_coarse_scale=6,
+        matrix_fine_scale=2,
+    ),
+    atpk=dict(
+        window=1,
         psf_sigma=1.0,
     ),
     atprk=dict(
@@ -37,11 +51,16 @@ CONFIG = dict(
         psf_sigma=1.0,
     ),
     cdsck=dict(
+        # 尺度语义与 dsck 一致:经验阶段 coarse_scale/fine_scale,
+        # 矩阵阶段 matrix_coarse_scale/matrix_fine_scale。
         coarse_scale=3,
         fine_scale=2,
         coarse_window=1,
         fine_window=3,
         psf_sigma=1.0,
+        cross_mode="degrade",
+        matrix_coarse_scale=6,
+        matrix_fine_scale=2,
         max_points=100,
         max_radius=50,
     ),

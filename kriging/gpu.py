@@ -511,24 +511,27 @@ def r_uu_ll_gpu(
 def _cdsck_coordinate_kernel(
     prediction, coarse, fine, mask, weights,
     coarse_scale, coarse_window, fine_window,
-    fine_sill, fine_rng, max_points, max_radius,
+    coarse_sill, coarse_rng, fine_sill, fine_rng,
+    cross_c0, cross_sill, cross_rng,
+    max_points, max_radius,
 ):
-    """Cloud-aware DSCK prediction via per-point ordinary kriging.
+    """Cloud-aware DSCK prediction via per-point cooperative cokriging.
 
-    Each thread computes one output pixel. Dynamically expands a square window
-    around the predicted point, collecting non-cloud fine points until
-    ``max_points`` are gathered or ``max_radius`` is reached. Then builds an
-    ordinary-kriging system (with Lagrange multiplier) using the fine variogram
-    model, solves by Gaussian elimination, and weights the non-cloud values.
-    No fallback: every pixel is predicted via local kriging on its collected
-    non-cloud points (even if few).
+    Each thread computes one output pixel. Collects coarse neighbors (fixed
+    window, no cloud) + fine non-cloud neighbors (dynamically expanding window
+    up to ``max_points``). Builds a cooperative kriging system using the three
+    variogram models (coarse self, fine self, cross), solves by Gaussian
+    elimination, and weights coarse + fine values.
+
+    ``coarse_sill``/``coarse_rng``: coarse self-variogram params.
+    ``fine_sill``/``fine_rng``: fine self-variogram params.
+    ``cross_c0``/``cross_sill``/``cross_rng``: cross-variogram params.
     """
     row, column = cuda.grid(2)
     if row >= prediction.shape[0] or column >= prediction.shape[1]:
         return
     coarse_row = row // coarse_scale
     coarse_column = column // coarse_scale
-    # Skip border pixels (no full coarse window).
     if coarse_row < coarse_window or coarse_row >= coarse.shape[0] - coarse_window:
         return
     if coarse_column < coarse_window or coarse_column >= coarse.shape[1] - coarse_window:
@@ -538,18 +541,32 @@ def _cdsck_coordinate_kernel(
     px = column + 0.5
     py = row + 0.5
 
-    # Dynamically expand window, collecting non-cloud points.
-    ptx = cuda.local.array(100, float64)
-    pty = cuda.local.array(100, float64)
-    val = cuda.local.array(100, float64)
-    m = 0
+    # --- Collect coarse neighbors (fixed window, all valid). ---
+    nc = (2 * coarse_window + 1) * (2 * coarse_window + 1)
+    cpx = cuda.local.array(49, float64)
+    cpy = cuda.local.array(49, float64)
+    cval = cuda.local.array(49, float64)
+    ci = 0
+    for lr in range(-coarse_window, coarse_window + 1):
+        for lc in range(-coarse_window, coarse_window + 1):
+            cr = coarse_row + lr
+            cc = coarse_column + lc
+            # coarse coordinates in fine-scale units: each coarse cell = coarse_scale fine cells.
+            cpx[ci] = cc * coarse_scale + 0.5
+            cpy[ci] = cr * coarse_scale + 0.5
+            cval[ci] = coarse[cr, cc]
+            ci += 1
+
+    # --- Collect fine non-cloud neighbors (dynamic expanding window). ---
+    fpx = cuda.local.array(100, float64)
+    fpy = cuda.local.array(100, float64)
+    fval = cuda.local.array(100, float64)
+    nf = 0
     radius = 0
-    while m < max_points and radius < max_radius:
+    while nf < max_points and radius < max_radius:
         radius += 1
-        # Iterate the ring at this radius (square window border).
         for lr in range(-radius, radius + 1):
             for lc in range(-radius, radius + 1):
-                # Only process the outer ring, not the inner square.
                 if abs(lr) != radius and abs(lc) != radius:
                     continue
                 r = row + lr
@@ -558,47 +575,89 @@ def _cdsck_coordinate_kernel(
                     continue
                 if mask[r, c] == 1:
                     continue
-                if m >= max_points:
+                if nf >= max_points:
                     break
-                ptx[m] = c + 0.5
-                pty[m] = r + 0.5
-                val[m] = fine[r, c]
-                m += 1
-            if m >= max_points:
+                fpx[nf] = c + 0.5
+                fpy[nf] = r + 0.5
+                fval[nf] = fine[r, c]
+                nf += 1
+            if nf >= max_points:
                 break
 
-    if m == 0:
-        # No non-cloud point reachable: predict from coarse center as last resort.
-        prediction[row, column] = coarse[coarse_row, coarse_column]
-        return
+    # Variogram helper closures (exponential models).
+    # Coarse self: sill_c * (1 - exp(-d/rng_c))
+    # Fine self:   sill_f * (1 - exp(-d/rng_f))
+    # Cross:       c0 + sill_x * (1 - exp(-d/rng_x))
 
-    # Build ordinary kriging system: (m+1)x(m+1) matrix A, rhs b.
-    n = m + 1
-    A = cuda.local.array((101, 101), float64)
-    b = cuda.local.array(101, float64)
+    # --- Build cooperative kriging system. ---
+    # Layout: [0..nc-1 = coarse, nc..nc+nf-1 = fine, +2 Lagrange].
+    n = nc + nf + 2
+    nmax = 49 + 100 + 2
+    A = cuda.local.array((151, 151), float64)
+    b = cuda.local.array(151, float64)
     for i in range(n):
         b[i] = 0.0
         for j in range(n):
             A[i, j] = 0.0
-    for i in range(m):
-        for j in range(m):
+
+    # Coarse-coarse block (self variogram).
+    for i in range(nc):
+        for j in range(nc):
             if i == j:
                 A[i, j] = 0.0
             else:
-                dx = ptx[i] - ptx[j]
-                dy = pty[i] - pty[j]
+                dx = cpx[i] - cpx[j]
+                dy = cpy[i] - cpy[j]
                 d = math.sqrt(dx * dx + dy * dy)
-                A[i, j] = fine_sill * (1.0 - math.exp(-d / fine_rng))
-        A[i, m] = 1.0
-        A[m, i] = 1.0
-        dx = ptx[i] - px
-        dy = pty[i] - py
-        d = math.sqrt(dx * dx + dy * dy)
-        b[i] = fine_sill * (1.0 - math.exp(-d / fine_rng))
-    A[m, m] = 0.0
-    b[m] = 1.0
+                A[i, j] = coarse_sill * (1.0 - math.exp(-d / coarse_rng))
 
-    # Solve A·w = b by Gaussian elimination with partial pivoting.
+    # Fine-fine block (self variogram).
+    for i in range(nf):
+        for j in range(nf):
+            if i == j:
+                A[nc + i, nc + j] = 0.0
+            else:
+                dx = fpx[i] - fpx[j]
+                dy = fpy[i] - fpy[j]
+                d = math.sqrt(dx * dx + dy * dy)
+                A[nc + i, nc + j] = fine_sill * (1.0 - math.exp(-d / fine_rng))
+
+    # Coarse-fine cross block.
+    for i in range(nc):
+        for j in range(nf):
+            dx = cpx[i] - fpx[j]
+            dy = cpy[i] - fpy[j]
+            d = math.sqrt(dx * dx + dy * dy)
+            A[i, nc + j] = cross_c0 + cross_sill * (1.0 - math.exp(-d / cross_rng))
+            A[nc + j, i] = A[i, nc + j]
+
+    # Lagrange multipliers: coarse constraint (sum w_c = 1), fine constraint (sum w_f = 0).
+    for i in range(nc):
+        A[i, nc + nf] = 1.0
+        A[nc + nf, i] = 1.0
+        A[i, nc + nf + 1] = 0.0
+        A[nc + nf + 1, i] = 0.0
+    for j in range(nf):
+        A[nc + j, nc + nf] = 0.0
+        A[nc + nf, nc + j] = 0.0
+        A[nc + j, nc + nf + 1] = 1.0
+        A[nc + nf + 1, nc + j] = 1.0
+
+    # RHS: variogram between each neighbor and predicted point.
+    for i in range(nc):
+        dx = cpx[i] - px
+        dy = cpy[i] - py
+        d = math.sqrt(dx * dx + dy * dy)
+        b[i] = coarse_sill * (1.0 - math.exp(-d / coarse_rng))
+    for j in range(nf):
+        dx = fpx[j] - px
+        dy = fpy[j] - py
+        d = math.sqrt(dx * dx + dy * dy)
+        b[nc + j] = fine_sill * (1.0 - math.exp(-d / fine_rng))
+    b[nc + nf] = 1.0   # coarse constraint
+    b[nc + nf + 1] = 0.0  # fine constraint
+
+    # --- Solve A·w = b by Gaussian elimination with partial pivoting. ---
     for k in range(n):
         piv = k
         maxv = abs(A[k, k])
@@ -615,38 +674,37 @@ def _cdsck_coordinate_kernel(
             b[k] = b[piv]
             b[piv] = tmp
         if abs(A[k, k]) < 1e-12:
-            # Singular: fall back to simple average of non-cloud points.
-            s = 0.0
-            for i in range(m):
-                s += val[i]
-            prediction[row, column] = s / m
+            # Singular: fall back to coarse-center value.
+            prediction[row, column] = coarse[coarse_row, coarse_column]
             return
         for i in range(k + 1, n):
             f = A[i, k] / A[k, k]
             for j in range(k, n):
                 A[i, j] -= f * A[k, j]
             b[i] -= f * b[k]
-    # Back-substitution.
-    w = cuda.local.array(101, float64)
+    w = cuda.local.array(151, float64)
     for i in range(n - 1, -1, -1):
         s = b[i]
         for j in range(i + 1, n):
             s -= A[i, j] * w[j]
         w[i] = s / A[i, i]
 
+    # Weighted prediction: sum of coarse weights * coarse values + fine weights * fine values.
     value = 0.0
-    for i in range(m):
-        value += w[i] * val[i]
+    for i in range(nc):
+        value += w[i] * cval[i]
+    for j in range(nf):
+        value += w[nc + j] * fval[j]
     prediction[row, column] = value
 
 
 def cdsck_coordinate_gpu(
     coarse_scale: int, fine_scale: int, coarse_window: int, fine_window: int,
     coarse: np.ndarray, fine: np.ndarray, mask: np.ndarray, weights: np.ndarray,
-    fine_params: np.ndarray, cross_params: np.ndarray,
+    coarse_params: np.ndarray, fine_params: np.ndarray, cross_params: np.ndarray,
     max_points: int, max_radius: int,
 ) -> np.ndarray:
-    """Cloud-aware DSCK prediction on CUDA (per-point ordinary kriging)."""
+    """Cloud-aware DSCK prediction on CUDA (per-point cooperative cokriging)."""
     _require_cuda()
     coarse_device = cuda.to_device(np.asarray(coarse, dtype=np.float64))
     fine_device = cuda.to_device(np.asarray(fine, dtype=np.float64))
@@ -659,7 +717,10 @@ def cdsck_coordinate_gpu(
     _cdsck_coordinate_kernel[blocks, threads](
         prediction, coarse_device, fine_device, mask_device, weights_device,
         coarse_scale, coarse_window, fine_window,
-        float(fine_params[0]), float(fine_params[1]), max_points, max_radius,
+        float(coarse_params[0]), float(coarse_params[1]),
+        float(fine_params[0]), float(fine_params[1]),
+        float(cross_params[0]), float(cross_params[1]), float(cross_params[2]),
+        max_points, max_radius,
     )
     return prediction.copy_to_host()
 

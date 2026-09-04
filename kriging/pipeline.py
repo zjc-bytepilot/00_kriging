@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 
 import numpy as np
 
 from .config import ExperimentConfig
 from .data import GeoTiffLoader, save_geotiff
-from .estimators import ATPRKInterpolator, CDSCKInterpolator, DSCKInterpolator
+from .estimators import ATPKInterpolator, ATPRKInterpolator, CDSCKInterpolator, DSCKInterpolator
 from .metrics import SpectralMetrics, evaluate_spectral
 
 
@@ -28,7 +29,7 @@ class KrigingExperiment:
         self.config = config
         self._reference_profile: dict | None = None
 
-    def load_first_dataset(self) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    def load_first_dataset(self) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
         data = self.config.data
         identifiers = data.dates
         coarse_raster = GeoTiffLoader(data.coarse_path, data.coarse_pattern).load(identifiers)[0]
@@ -39,15 +40,14 @@ class KrigingExperiment:
         label = None
         if data.label_path is not None:
             label = GeoTiffLoader(data.label_path, data.label_pattern).load(identifiers)[0].values
-        cloud_mask = None
-        if data.cloud_mask_path is not None:
-            cloud_mask = GeoTiffLoader(
-                data.cloud_mask_path, data.cloud_mask_pattern
-            ).load(identifiers)[0].values
-        return coarse, fine, label, cloud_mask
+        return coarse, fine, label
+
+    def load_first_cloud_mask(self, path: Path, pattern: str) -> np.ndarray:
+        """Load one configured cloud mask for the first experiment identifier."""
+        return GeoTiffLoader(path, pattern).load(self.config.data.dates)[0].values
 
     def run(self) -> dict[str, MethodResult]:
-        coarse, fine, label, cloud_mask = self.load_first_dataset()
+        coarse, fine, label = self.load_first_dataset()
         bands = self.config.band_count
         if label is not None and (label.ndim != 3 or label.shape[2] < bands):
             raise ValueError(f"标签影像至少需要 {bands} 个波段，实际形状为 {label.shape}。")
@@ -81,20 +81,35 @@ class KrigingExperiment:
                 elapsed_seconds=perf_counter() - started,
             )
 
-        if "c_dsck" in self.config.methods:
-            if cloud_mask is None:
-                raise ValueError("c_dsck 方法需要云掩膜数据(data.cloud_mask_path)。")
+        if "atpk" in self.config.methods:
             started = perf_counter()
-            prediction = CDSCKInterpolator(
-                self.config.cdsck, self.config.search, self.config.backend.mode,
+            prediction = ATPKInterpolator(
+                self.config.atpk, self.config.search, self.config.backend.mode,
             ).sharpen(
-                coarse, fine, cloud_mask, bands, self._print_progress
+                coarse, fine, bands, self._print_progress
             )
-            results["c_dsck"] = MethodResult(
+            spatial_scale = fine.shape[0] / coarse.shape[0]
+            results["atpk"] = MethodResult(
                 prediction=prediction,
-                metrics=self._evaluate(label, prediction, self.config.cdsck.coarse_scale),
+                metrics=self._evaluate(label, prediction, spatial_scale),
                 elapsed_seconds=perf_counter() - started,
             )
+
+        if "c_dsck" in self.config.methods:
+            interpolator = CDSCKInterpolator(
+                self.config.cdsck, self.config.search, self.config.backend.mode,
+            )
+            for mask_config in self.config.data.cloud_masks:
+                cloud_mask = self.load_first_cloud_mask(mask_config.path, mask_config.pattern)
+                started = perf_counter()
+                prediction = interpolator.sharpen(
+                    coarse, fine, cloud_mask, bands, self._print_progress
+                )
+                results[f"c_dsck_{mask_config.name}"] = MethodResult(
+                    prediction=prediction,
+                    metrics=self._evaluate(label, prediction, self.config.cdsck.coarse_scale),
+                    elapsed_seconds=perf_counter() - started,
+                )
         return results
 
     def save_results(self, results: dict[str, MethodResult]) -> None:
